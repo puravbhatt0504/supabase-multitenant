@@ -6,6 +6,19 @@ import { prisma } from './db'
 import { removeProjectTraefikConfig } from './traefik'
 import { getCoreBasePath, getProjectsBasePath } from './paths'
 import { composeEnv } from './compose-env'
+import { slimProjectCompose } from './slim-compose'
+import { slotFromEnv, tenantSlot } from './tenant-gateway'
+import {
+  RETAINED_SHARED_SERVICES,
+  allocateSlotForNewProject,
+  platformBaseDomainOrThrow,
+  projectEnvMap,
+  registerTenantOnGateway,
+  removeTenantRouterFile,
+  tenantEnvVars,
+  unregisterTenantFromGateway,
+  writeTenantRouterFile,
+} from './tenant-provisioning'
 import {
   FUNCTIONS_ENV_FILE,
   ensureFunctionsEnvFile,
@@ -214,6 +227,26 @@ export async function createProject(
       `name: ${slug}`
     )
 
+    // Born on the shared plane, not as a second copy of the platform.
+    //
+    // The upstream template brings up eleven containers because it assumes it is the
+    // only stack on the machine. Here the gateway is `smbt-shared-gateway` and
+    // supavisor/realtime/storage/functions are opt-in, so a new project is a database
+    // plus its own API. `studio`, `meta` and `imgproxy` are still per project — they
+    // are the shared-plane work that has not landed (ADR-0003), named rather than
+    // assumed so hoisting them later is a one-line change here.
+    const slot = await allocateSlotForNewProject()
+    const baseDomain = platformBaseDomainOrThrow()
+    const slimmed = slimProjectCompose(dockerComposeContent, {
+      slug,
+      gatewayPort: slot.listenerPort,
+      keepExtra: [...RETAINED_SHARED_SERVICES],
+    })
+    dockerComposeContent = slimmed.compose
+    console.log(
+      `Project ${slug}: gateway slot ${slot.slot} (listener ${slot.listenerPort} -> published ${slot.publishedPort}); ` +
+        `kept ${slimmed.kept.join(', ')}; removed ${slimmed.removed.join(', ')}`
+    )
 
     // Write the modified docker-compose.yml back
     await fs.writeFile(dockerComposeFile, dockerComposeContent)
@@ -294,7 +327,12 @@ export async function createProject(
       LOGFLARE_PRIVATE_ACCESS_TOKEN: generateRandomString(64),
       DOCKER_SOCKET_LOCATION: '/var/run/docker.sock',
       GOOGLE_PROJECT_ID: 'GOOGLE_PROJECT_ID',
-      GOOGLE_PROJECT_NUMBER: 'GOOGLE_PROJECT_NUMBER'
+      GOOGLE_PROJECT_NUMBER: 'GOOGLE_PROJECT_NUMBER',
+
+      // Reachability on the shared plane: the tenant's slot and listener/published
+      // ports, the hosts it answers on, and the public URLs auth and Studio hand out.
+      // These are the difference between a project that exists and one that works.
+      ...tenantEnvVars(slug, slot, baseDomain),
     }
 
     // Write initial .env file with unique defaults
@@ -314,6 +352,16 @@ export async function createProject(
           value,
         },
       })
+    }
+
+    // Its hosts exist from now on, so the routers are written before the containers
+    // are: deploy() re-writes them idempotently, which makes a failure here a warning
+    // rather than a project that was created but never became reachable.
+    try {
+      const routerFile = await writeTenantRouterFile({ slug, slot, baseDomain })
+      console.log(`Wrote router ${routerFile} (${tenantEnvVars(slug, slot, baseDomain).GW_STUDIO_HOST})`)
+    } catch (routerError) {
+      console.warn(`Could not write the Traefik router file for ${slug}:`, routerError)
     }
 
     return { success: true, project }
@@ -511,6 +559,34 @@ export async function deployProject(projectId: string) {
       data: { status: 'active' },
     })
 
+    // The containers exist now, so the tenant can be joined to the shared gateway and
+    // its hosts re-asserted. A gateway problem is not a failed deploy — the stack is
+    // running, and re-deploying retries this step — so it warns instead of throwing.
+    try {
+      const env = await projectEnvMap(project.slug)
+      const slotNumber = slotFromEnv(env)
+      if (slotNumber === null) {
+        console.warn(
+          `Project ${project.slug} has no GATEWAY_SLOT (created before the shared gateway); ` +
+            'it stays unreachable until the slot backfill runs'
+        )
+      } else {
+        const slot = tenantSlot(slotNumber)
+        const baseDomain = platformBaseDomainOrThrow()
+        await writeTenantRouterFile({ slug: project.slug, slot, baseDomain })
+        const synced = await registerTenantOnGateway(project.slug)
+        const ports = Object.entries(synced.ports)
+          .map(([tenantSlug, port]) => `${tenantSlug}:${port}`)
+          .join(', ')
+        console.log(
+          `Shared gateway synced — ${synced.tenants} tenant(s) on ${ports}` +
+            (synced.skipped.length > 0 ? `; skipped ${synced.skipped.join(', ')}` : '')
+        )
+      }
+    } catch (gatewayError) {
+      console.warn('Shared-gateway registration failed (stack is up; re-deploy to retry):', gatewayError)
+    }
+
     return { success: true }
   } catch (error) {
     console.error('Failed to deploy project:', error)
@@ -613,9 +689,11 @@ export async function deleteProject(projectId: string) {
       // Continue with deletion even if Docker cleanup fails
     }
 
-    // Step 1.5: Remove Traefik configuration
+    // Step 1.5: Remove Traefik configuration — both the shared-plane router file and
+    // the legacy per-project one, so a removed project cannot keep answering a host.
     try {
       console.log(`Removing Traefik config for project ${project.slug}...`)
+      await removeTenantRouterFile(project.slug)
       await removeProjectTraefikConfig(project.slug)
     } catch (traefikError) {
       console.warn('Failed to remove Traefik config:', traefikError)
@@ -652,6 +730,16 @@ export async function deleteProject(projectId: string) {
     }
 
     console.log(`Project ${project.slug} deleted successfully`)
+
+    // Drop the tenant from the shared gateway. The rewrite is derived from the
+    // database, so it has to happen *after* the row is gone — run it earlier and the
+    // deleted project would be written straight back into the gateway config.
+    try {
+      await unregisterTenantFromGateway(project.slug)
+    } catch (gatewayError) {
+      console.warn('Could not update the shared gateway after deletion:', gatewayError)
+    }
+
     return { success: true }
   } catch (error) {
     console.error('Failed to delete project:', error)

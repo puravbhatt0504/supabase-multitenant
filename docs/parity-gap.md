@@ -18,12 +18,14 @@ Prepared 2026-10-09. Board: <https://github.com/orgs/supabase-multitenant/projec
 | System administrator view | `/admin` for the panel owner and system admin only |
 | On-demand services | core `db+rest+auth` always; realtime/storage/functions/dashboard in groups |
 | Shared gateway | one envoy serving every tenant, one listener port per tenant |
+| Projects born slim and routed | slot + host env, slim compose, router file, gateway join — all at creation, see [project-birth.md](project-birth.md) |
+| Gateway repair | `POST /api/gateway/sync` re-derives every router, network join and envoy cluster |
 
 ## Gaps, in the order they will be closed
 
 | Priority | Gap | Issue |
 |---|---|---|
-| P0 | new projects are born broken — DSNs missing and the panel env overrides each project .env | [#145](https://github.com/supabase-multitenant/supabase-multitenant/issues/145) |
+| P0 | new projects are born broken — DSNs missing and the panel env overrides each project .env | [#145](https://github.com/supabase-multitenant/supabase-multitenant/issues/145) *(fixed, closed)* |
 | P0 | OAuth providers — per-project provider configuration in the panel | [#146](https://github.com/supabase-multitenant/supabase-multitenant/issues/146) |
 | P1 | auth email per project — SMTP, sender, templates | [#147](https://github.com/supabase-multitenant/supabase-multitenant/issues/147) |
 | P1 | service opt-in per project — realtime, storage, functions — with live status | [#148](https://github.com/supabase-multitenant/supabase-multitenant/issues/148) |

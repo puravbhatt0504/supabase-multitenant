@@ -116,6 +116,27 @@ export async function connectTenantNetwork(slug: string): Promise<void> {
   }
 }
 
+/**
+ * Detach the gateway from a tenant's network — the delete path.
+ *
+ * The counterpart of `connectTenantNetwork`: leaving the alias attached after the
+ * containers are gone leaves a dangling DNS entry, and the rewrite that follows would
+ * still render a cluster for a tenant that no longer exists. Absent is a success here.
+ */
+export async function disconnectTenantNetwork(slug: string): Promise<void> {
+  const network = `${slug}_default`
+  try {
+    await execAsync(`docker network disconnect -f ${GATEWAY_CONTAINER} ${network}`, {
+      timeout: 30_000,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!/(not connected|not found|no such network|no such container)/i.test(message)) {
+      throw new Error(`Could not detach ${GATEWAY_CONTAINER} from ${network}: ${message}`)
+    }
+  }
+}
+
 /** Rewrite the gateway's clusters and listeners from the database. */
 export async function writeGatewayConfig(
   tenants: TenantGatewayInput[]

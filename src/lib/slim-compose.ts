@@ -74,6 +74,15 @@ export interface SlimComposeOptions {
   gatewayPort: number
   /** DNS name of the shared imgproxy, for `storage` when imgproxy is not per project. */
   sharedImgproxyHost?: string
+  /**
+   * Shared-plane services that must nevertheless stay in this project *for now*.
+   *
+   * `studio`, `meta` and `imgproxy` are destined for the shared plane (ADR-0003), but
+   * until the shared Studio exists a project that drops them has no dashboard at all.
+   * Naming them here keeps that decision explicit and reversible: remove the name and
+   * the service is hoisted, rather than a silent difference between projects.
+   */
+  keepExtra?: string[]
 }
 
 export interface SlimComposeResult {
@@ -216,10 +225,25 @@ export function slimProjectCompose(
 ): SlimComposeResult {
   const { slug, gatewayPort } = options
   const optional = options.optional ?? []
-  const keep = new Set(servicesForProject(optional))
+  const keepExtra = options.keepExtra ?? []
 
   const parts = parseCompose(compose)
   const present = new Set(parts.services.map((s) => s.name))
+
+  // Validate the extras before anything is removed: an unknown name is a typo, and a
+  // silent no-op would leave the project without the service the caller asked for.
+  for (const extra of keepExtra) {
+    if (PER_PROJECT_OPTIONAL.includes(extra as OptionalService)) {
+      throw new SlimComposeError(
+        `${extra} is an opt-in service — pass it in 'optional', not 'keepExtra'`
+      )
+    }
+    if (!present.has(extra)) {
+      throw new SlimComposeError(`keepExtra names a service this compose does not define: ${extra}`)
+    }
+  }
+
+  const keep = new Set([...servicesForProject(optional), ...keepExtra])
 
   const removed = parts.services.map((s) => s.name).filter((n) => !keep.has(n))
 

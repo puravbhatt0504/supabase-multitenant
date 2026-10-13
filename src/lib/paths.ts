@@ -41,6 +41,13 @@ export const ENV_MODE = 'SUPABASE_MULTITENANT_MODE'
 export const ENV_DATA_PATH = 'DATA_PATH'
 
 /**
+ * Overrides the directory the proxy reads its dynamic config from. Deployment
+ * setting rather than a constant: the panel and the proxy are separate containers,
+ * so only the deployment knows the shared path (see getTraefikDynamicPath).
+ */
+export const ENV_TRAEFIK_DYNAMIC_PATH = 'TRAEFIK_DYNAMIC_PATH'
+
+/**
  * Resolve the running mode.
  * - "production" when deployed via Docker/install.sh
  * - "development" for local dev (default)
@@ -51,9 +58,19 @@ export function getMode(): string {
 
 /**
  * Directory where Traefik dynamic configs are written.
- * In production the install.sh writes hardcoded to /etc/supabase-multitenant.
+ *
+ * The proxy that *reads* these files is its own container, so "where to write" is
+ * a deployment fact, not a code constant: point `TRAEFIK_DYNAMIC_PATH` at the
+ * directory the proxy has mounted (in this deployment `/data/coolify/proxy/dynamic`,
+ * which the panel can reach because both containers bind the same `/data`).
+ *
+ * The fallbacks only matter for a bare install that never set it. A router file
+ * written anywhere else is invisible to the proxy — which looks exactly like a
+ * project whose host does not resolve.
  */
 export function getTraefikDynamicPath(): string {
+  const override = process.env[ENV_TRAEFIK_DYNAMIC_PATH]
+  if (override) return override
   const mode = getMode()
   if (mode === 'production') {
     return path.join('/etc/supabase-multitenant', 'traefik', 'dynamic')
