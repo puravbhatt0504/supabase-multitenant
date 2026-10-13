@@ -99,19 +99,43 @@ export async function projectsForGateway(): Promise<ProjectForGateway[]> {
   }))
 }
 
+/**
+ * The command that joins the gateway to a tenant's network.
+ *
+ * Exported and tested because the argument order is not guessable and its failure is
+ * silent-ish: `docker network connect [OPTIONS] NETWORK CONTAINER` — with the two
+ * swapped docker reports "No such container: <slug>_default" and the tenant simply
+ * never reaches the gateway. The four projects cut over by hand were connected with
+ * the correct order by hand, which is exactly why the mistake survives review.
+ */
+export function gatewayConnectCommand(slug: string): string {
+  return `docker network connect --alias ${tenantNetworkAlias(slug, 'gw')} ${tenantNetwork(slug)} ${GATEWAY_CONTAINER}`
+}
+
+/** `docker network disconnect [OPTIONS] NETWORK CONTAINER` — same order trap. */
+export function gatewayDisconnectCommand(slug: string): string {
+  return `docker network disconnect -f ${tenantNetwork(slug)} ${GATEWAY_CONTAINER}`
+}
+
+/** The compose network a project's containers live on (compose names it `<project>_default`). */
+export function tenantNetwork(slug: string): string {
+  return `${slug}_default`
+}
+
+/** Alias the gateway answers to inside a tenant network. */
+export function tenantNetworkAlias(slug: string, service: string): string {
+  return `${slug}-${service}`
+}
+
 /** Join the gateway to a tenant's compose network, as `<slug>-gw`, so both can reach each other. */
 export async function connectTenantNetwork(slug: string): Promise<void> {
-  const network = `${slug}_default`
   try {
-    await execAsync(
-      `docker network connect --alias ${slug}-gw ${GATEWAY_CONTAINER} ${network}`,
-      { timeout: 30_000 }
-    )
+    await execAsync(gatewayConnectCommand(slug), { timeout: 30_000 })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     // Already joined is the normal case on re-sync; anything else is worth knowing about.
     if (!/already exists/i.test(message)) {
-      throw new Error(`Could not join ${GATEWAY_CONTAINER} to ${network}: ${message}`)
+      throw new Error(`Could not join ${GATEWAY_CONTAINER} to ${tenantNetwork(slug)}: ${message}`)
     }
   }
 }
@@ -124,15 +148,12 @@ export async function connectTenantNetwork(slug: string): Promise<void> {
  * still render a cluster for a tenant that no longer exists. Absent is a success here.
  */
 export async function disconnectTenantNetwork(slug: string): Promise<void> {
-  const network = `${slug}_default`
   try {
-    await execAsync(`docker network disconnect -f ${GATEWAY_CONTAINER} ${network}`, {
-      timeout: 30_000,
-    })
+    await execAsync(gatewayDisconnectCommand(slug), { timeout: 30_000 })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (!/(not connected|not found|no such network|no such container)/i.test(message)) {
-      throw new Error(`Could not detach ${GATEWAY_CONTAINER} from ${network}: ${message}`)
+      throw new Error(`Could not detach ${GATEWAY_CONTAINER} from ${tenantNetwork(slug)}: ${message}`)
     }
   }
 }
