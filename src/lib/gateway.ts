@@ -33,6 +33,8 @@
  */
 
 /** Upstream service -> in-container port, read from the real generated `cds.yaml`. */
+import { createHash } from 'node:crypto'
+
 export const TENANT_UPSTREAMS = [
   { service: 'auth', host: 'auth', port: 9999 },
   { service: 'rest', host: 'rest', port: 3000 },
@@ -604,6 +606,74 @@ export interface SharedGatewayConfig {
   ports: Record<string, number>
 }
 
+/**
+ * The value envoy's `basic_auth` filter needs, derived from the deployment's credential.
+ *
+ * Two different formats are in play and mixing them up takes the whole gateway down: the
+ * deployment stores the **HTTP Basic** credential (base64 of `user:password`, because the
+ * panel sends it as an `authorization` header when it proxies Studio), while envoy's
+ * `users.inline_string` wants **htpasswd** form. A config carrying the base64 value is
+ * rejected (`no colon in the credential`), and because the filter is part of the listener
+ * chain, envoy creates *no listeners at all* — every tenant on the gateway goes dark.
+ *
+ * So: decode, then hash the password into the `{SHA}` form htpasswd allows. The panel's
+ * Basic header keeps working, because it is derived from the same password.
+ */
+export function htpasswdFromBasicAuth(raw: string | undefined | null): string | null {
+  const value = (raw ?? '').trim()
+  if (!value) return null
+  // Already htpasswd (`user:hash` or `user:{SHA}…`): use as given.
+  if (value.includes(':')) return value
+
+  const decoded = Buffer.from(value, 'base64').toString('utf8')
+  const separator = decoded.indexOf(':')
+  if (separator <= 0) return null
+
+  const user = decoded.slice(0, separator)
+  const password = decoded.slice(separator + 1)
+  const sha = createHash('sha1').update(password).digest('base64')
+  return `${user}:{SHA}${sha}`
+}
+
+/**
+ * Fill the placeholders that belong to the platform rather than to a tenant.
+ *
+ * Tenant secrets are handled per tenant; `DASHBOARD_BASIC_AUTH` is one value for the whole
+ * gateway (Studio is shared, see `PLATFORM_LEVEL_PLACEHOLDERS`). Missing it is an error and
+ * not a passthrough: the placeholder left in place is a config envoy refuses to load.
+ */
+export function resolvePlatformPlaceholders(
+  fragment: string,
+  env: Record<string, string | undefined> = process.env
+): string {
+  let output = fragment
+
+  for (const name of PLATFORM_LEVEL_PLACEHOLDERS) {
+    const token = `\${${name}}`
+    if (!output.includes(token)) continue
+
+    if (name === 'DASHBOARD_BASIC_AUTH') {
+      const value = htpasswdFromBasicAuth(env.SHARED_GATEWAY_BASIC_AUTH ?? env.DASHBOARD_BASIC_AUTH)
+      if (!value) {
+        throw new GatewayIsolationError(
+          'SHARED_GATEWAY_BASIC_AUTH is not set, so the shared dashboard credential cannot be ' +
+            'written — a placeholder left in the config makes envoy refuse every listener',
+          [name]
+        )
+      }
+      output = output.replaceAll(token, value)
+      continue
+    }
+
+    throw new GatewayIsolationError(`No value is known for platform placeholder ${name}`, [name])
+  }
+
+  return output
+}
+
+/**
+ * Build the shared gateway config: clusters for every tenant, one listener per tenant.
+ */
 export function buildSharedGateway(
   tenants: TenantGatewayInput[],
   ldsFragmentTemplate: string,
@@ -620,7 +690,12 @@ export function buildSharedGateway(
   }
 
   const cds = buildSharedClusters(tenants)
-  const { lds, ports } = buildSharedListener(tenants, ldsFragmentTemplate, options)
+  const listener = buildSharedListener(tenants, ldsFragmentTemplate, options)
+
+  // Platform-level placeholders last: they are one value for the whole gateway, and leaving
+  // one unsubstituted is not cosmetic — envoy refuses the config and every tenant goes dark.
+  const lds = resolvePlatformPlaceholders(listener.lds)
+  const ports = listener.ports
 
   // Belt and braces on the assembled document, not just the fragments.
   const strayInLds = [...slugs].flatMap((slug) => findClusterRefsNotOwnedBy(lds, slug))
