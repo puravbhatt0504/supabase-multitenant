@@ -138,6 +138,52 @@ export function tenantEnvVars(slug: string, slot: TenantSlot, baseDomain: string
   }
 }
 
+/** The hosts a router file claims, from its `Host(`…`)` rules. */
+export function routerFileHosts(content: string): string[] {
+  return [...content.matchAll(/Host\(`([^`]+)`\)/g)].map((match) => match[1])
+}
+
+/**
+ * Delete every router file that claims one of these hosts, except `keep`.
+ *
+ * One host must be served by one file. Projects cut over by hand left theirs under names this
+ * module never writes — `<first label>.yaml`, or a bespoke `drill-shared-gateway.yaml` — and
+ * two files claiming the same `Host` is a duplicate-router conflict. Pruning by *host* rather
+ * than by filename catches every naming scheme, including ones invented later, and a stale
+ * file for a deleted project would otherwise keep its hostname answering.
+ */
+export async function pruneRouterFilesClaimingHosts(hosts: string[], keep?: string): Promise<string[]> {
+  const wanted = hosts.filter(Boolean)
+  if (wanted.length === 0) return []
+
+  const dir = getTraefikDynamicPath()
+  let entries: string[]
+  try {
+    entries = await fs.readdir(dir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+
+  const removed: string[] = []
+  for (const entry of entries) {
+    if (!/\.ya?ml$/i.test(entry)) continue
+    const file = path.join(dir, entry)
+    if (keep && file === keep) continue
+    let content: string
+    try {
+      content = await fs.readFile(file, 'utf8')
+    } catch {
+      continue
+    }
+    if (!routerFileHosts(content).some((host) => wanted.includes(host))) continue
+    await fs.unlink(file)
+    removed.push(file)
+    console.log(`Removed the superseded router file ${file} (same host, older name)`)
+  }
+  return removed
+}
+
 /** Write the tenant's router file: its hosts resolve as soon as the stack answers. */
 export async function writeTenantRouterFile(input: {
   slug: string
@@ -161,36 +207,28 @@ export async function writeTenantRouterFile(input: {
     })
   )
 
-  // Projects cut over by hand have a router file under the old name (`<api host>` without
-  // the platform domain). Two files describing the same Host is a duplicate-router
-  // conflict, so the file this module owns *replaces* it instead of sitting beside it —
-  // which also means the next deploy of an old project migrates it automatically.
-  const apiHost = apiHostFor(input.slug, input.baseDomain)
-  for (const legacyName of [`${apiHost}.yaml`, `${apiHost}.yml`]) {
-    const legacyPath = path.join(dir, legacyName)
-    if (legacyPath === file) continue
-    try {
-      await fs.unlink(legacyPath)
-      console.log(`Removed the superseded router file ${legacyPath}`)
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== 'ENOENT') throw error
-    }
-  }
+  const { apiHost, studioHost } = tenantHosts(input.slug, input.baseDomain)
+  await pruneRouterFilesClaimingHosts([apiHost, studioHost], file)
 
   return file
 }
 
-/** Remove the tenant's router file; already-absent is a success. */
-export async function removeTenantRouterFile(slug: string): Promise<boolean> {
+/**
+ * Remove this tenant's routers: the file this module owns, and any file still claiming one of
+ * its hosts. Already-absent is a success.
+ */
+export async function removeTenantRouterFile(slug: string, hosts: string[] = []): Promise<boolean> {
+  let removed = false
   try {
     await fs.unlink(path.join(getTraefikDynamicPath(), tenantRouterFileName(slug)))
-    return true
+    removed = true
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
-    if (code === 'ENOENT') return false
-    throw error
+    if (code !== 'ENOENT') throw error
   }
+
+  const pruned = await pruneRouterFilesClaimingHosts(hosts)
+  return removed || pruned.length > 0
 }
 
 /**

@@ -1,9 +1,15 @@
+import { promises as fs } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import { SHARED_PLANE_SERVICES, slimProjectCompose } from '../src/lib/slim-compose'
 import { tenantSlot } from '../src/lib/tenant-gateway'
 import {
   RETAINED_SHARED_SERVICES,
+  pruneRouterFilesClaimingHosts,
+  routerFileHosts,
   TENANT_ENV_KEYS,
   platformBaseDomainOrThrow,
   tenantEnvVars,
@@ -157,5 +163,50 @@ describe('slimming at creation', () => {
     // realtime/storage/functions are per-project opt-ins: keeping one is legitimate,
     // but it belongs in `optional`, and saying so beats a silent misconfiguration.
     expect(() => slim(['realtime'])).toThrow(/opt-in/)
+  })
+})
+
+describe('one host, one router file', () => {
+  const HOST = `project101-of-org202.${BASE}`
+  const STUDIO = `project101-of-org202-1790168723120-studio.${BASE}`
+
+  it('reads the hosts a router file claims', () => {
+    const content = [
+      'routers:',
+      '  a:',
+      `    rule: Host(\`${HOST}\`)`,
+      `  b:`,
+      `    rule: Host(\`${STUDIO}\`)`,
+    ].join('\n')
+    expect(routerFileHosts(content)).toEqual([HOST, STUDIO])
+  })
+
+  it('prunes an older file serving the same host, whatever it is called', async () => {
+    // Hand cut-overs named their file after the API host's first label, or invented a name
+    // entirely; pruning by host catches both, and a file left behind for a deleted project
+    // would keep its hostname answering.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'routes-'))
+    const previous = process.env.TRAEFIK_DYNAMIC_PATH
+    process.env.TRAEFIK_DYNAMIC_PATH = dir
+    try {
+      const ours = path.join(dir, `${SLUG}.yml`)
+      const legacy = path.join(dir, 'project101-of-org202.yaml')
+      const bespoke = path.join(dir, 'drill-shared-gateway.yaml')
+      const other = path.join(dir, 'someone-else.yaml')
+      await fs.writeFile(ours, `rule: Host(\`${HOST}\`)`)
+      await fs.writeFile(legacy, `rule: Host(\`${HOST}\`)`)
+      await fs.writeFile(bespoke, `rule: Host(\`${STUDIO}\`)`)
+      await fs.writeFile(other, `rule: Host(\`unrelated.example.com\`)`)
+
+      const removed = await pruneRouterFilesClaimingHosts([HOST, STUDIO], ours)
+
+      expect(removed.sort()).toEqual([bespoke, legacy].sort())
+      expect(await fs.readdir(dir)).toEqual(expect.arrayContaining([path.basename(ours), 'someone-else.yaml']))
+      expect((await fs.readdir(dir)).length).toBe(2)
+    } finally {
+      if (previous === undefined) delete process.env.TRAEFIK_DYNAMIC_PATH
+      else process.env.TRAEFIK_DYNAMIC_PATH = previous
+      await fs.rm(dir, { recursive: true, force: true })
+    }
   })
 })

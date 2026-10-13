@@ -122,3 +122,55 @@ TRAEFIK_DYNAMIC_PATH=/data/coolify/proxy/dynamic
 (that directory is the proxy's mounted `/traefik/dynamic`; both containers bind the same
 `/data`). Without it the panel writes into its own container and every new project's host
 silently 404s — which is exactly the symptom that started this work.
+
+## 9. Operating the shared gateway
+
+Everything here was learned by taking the gateway down, so it is written as rules.
+
+**The container must publish the whole slot range, not just today's tenants.**
+Port bindings are fixed at container creation, so a gateway created when four projects
+existed publishes `11130-11133` only — the fifth project gets a listener inside envoy that
+nothing on the host can reach, and its API host answers `502` while its Studio (served by
+the panel) works fine. Create it with:
+
+```bash
+docker run -d --name smbt-shared-gateway --restart unless-stopped --user 0:0 \
+  --network supabase-multitenant-network \
+  -p 10.0.2.1:11130-11149:8100-8119 \
+  -v /data/shared/gateway/envoy:/etc/envoy:ro \
+  envoyproxy/envoy:v1.39.1 --config-path /etc/envoy/envoy.yaml --log-level warn
+```
+
+`--user 0:0` and the port range are both load-bearing: the config files are `0600 root` and
+the range has to cover `MAX_TENANTS` (20) rather than the current count.
+
+**The config must be readable by the container.** `docker restart` keeps working after the
+generator rewrites the files, but if anything chmods them to `0600` envoy exits with
+`unable to read file: /etc/envoy/envoy.yaml`, the container crash-loops, and *every* tenant
+on the gateway returns `502` at once. Write them `0644`.
+
+**The dashboard credential must be htpasswd, not the Basic header value.** The deployment
+stores `SHARED_GATEWAY_BASIC_AUTH` as base64(`user:password`) because the panel sends it as
+an `authorization` header when proxying Studio; envoy's `basic_auth` filter wants
+`user:hash`. A config carrying the base64 value is rejected — and because the filter is part
+of the listener chain, envoy creates **no listeners at all**, which is a full gateway
+outage, not a broken login. `resolvePlatformPlaceholders()` performs the translation and
+throws rather than emitting an unresolved placeholder.
+
+**After recreating the container, re-attach the tenants and sync.** A new container has no
+tenant networks; join each one (`docker network connect --alias <slug>-gw <slug>_default
+smbt-shared-gateway`) or simply call `POST /api/gateway/sync`, which does every join from
+the database. Then confirm the tenants answer — `401` from `/auth/v1/health` means the
+gateway and the tenant's auth service are both healthy.
+
+**Diagnosing a tenant that answers 502.** In order: `docker ps` for the gateway (a
+crash-looping gateway takes everyone down), `docker inspect` its networks (a missing tenant
+network is per-tenant), then test the listener directly, bypassing the proxy:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: <api host>' http://10.0.2.1:<published port>/auth/v1/health
+```
+
+`000` means nothing is listening on that port (port range or crash-loop); `401` means the
+tenant is fine and the problem is upstream of the gateway (router file, DNS, TLS).
+

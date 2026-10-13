@@ -693,7 +693,9 @@ export async function deleteProject(projectId: string) {
     // the legacy per-project one, so a removed project cannot keep answering a host.
     try {
       console.log(`Removing Traefik config for project ${project.slug}...`)
-      await removeTenantRouterFile(project.slug)
+      const env = await projectEnvMap(project.slug).catch(() => ({}) as Record<string, string>)
+      const hosts = [env.GW_API_HOST, env.GW_STUDIO_HOST].filter(Boolean) as string[]
+      await removeTenantRouterFile(project.slug, hosts)
       await removeProjectTraefikConfig(project.slug)
     } catch (traefikError) {
       console.warn('Failed to remove Traefik config:', traefikError)
