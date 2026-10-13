@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
+// Building a shared gateway writes the platform-level placeholders too, and the shared dashboard
+// credential has no default by design: without it the generated config is one envoy refuses to
+// load, so the code throws rather than emitting a placeholder. A deployment always has it set.
+process.env.SHARED_GATEWAY_BASIC_AUTH ??= Buffer.from('supabase:htpasswd-test').toString('base64')
+
 import {
   GatewayIsolationError,
   PLATFORM_LEVEL_PLACEHOLDERS,
