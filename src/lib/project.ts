@@ -7,6 +7,7 @@ import { removeProjectTraefikConfig } from './traefik'
 import { getCoreBasePath, getProjectsBasePath } from './paths'
 import { composeEnv } from './compose-env'
 import { ensureTenantPostgresPassword } from './tenant-db-auth'
+import { ensurePublicSchemaGrants } from './tenant-schema-grants'
 import { slimProjectCompose } from './slim-compose'
 import { slotFromEnv, tenantSlot } from './tenant-gateway'
 import {
@@ -588,6 +589,16 @@ export async function deployProject(projectId: string) {
           }
         } catch (dbAuthError) {
           console.warn('Could not reconcile the tenant database password:', dbAuthError)
+        }
+        // Same place, same reasoning: a project must be born able to hold tables. Studio's meta
+        // service writes to `public` as `postgres`, so a project whose `public` schema never
+        // received the standard grants answers `permission denied for schema public` in the table
+        // editor — with no way for the customer to fix it from there.
+        try {
+          const grants = await ensurePublicSchemaGrants(project.slug)
+          if (grants.repaired) console.log(`Public schema grants for ${project.slug}: ${grants.detail}`)
+        } catch (grantsError) {
+          console.warn('Could not reconcile the public schema grants:', grantsError)
         }
         const ports = Object.entries(synced.ports)
           .map(([tenantSlug, port]) => `${tenantSlug}:${port}`)
