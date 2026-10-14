@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db'
 import { apiTokenErrorResponse, requirePlatformAccess } from '@/lib/api-tokens'
+import { apiUrlFor } from '@/lib/project-endpoints'
 import { platformBaseDomainOrThrow } from '@/lib/tenant-provisioning'
 
 /**
@@ -31,7 +32,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     return Response.json({
       project: { slug: project.slug, name: project.name },
       api: {
-        url: env.SUPABASE_PUBLIC_URL ?? (env.GW_API_HOST ? `https://${env.GW_API_HOST}` : null),
+        url: apiUrlFor(env),
         anonKey: env.ANON_KEY ?? null,
         serviceRoleKey: env.SERVICE_ROLE_KEY ?? null,
       },

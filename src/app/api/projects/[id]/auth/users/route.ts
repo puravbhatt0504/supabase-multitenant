@@ -1,15 +1,15 @@
 import { prisma } from '@/lib/db'
 import { apiTokenErrorResponse, requirePlatformAccess } from '@/lib/api-tokens'
-import { runWithStdin } from '@/lib/exec-stdin'
-import { tenantContainerName } from '@/lib/gateway'
+import { apiUrlFor } from '@/lib/project-endpoints'
 
 /**
  * Create an end user in a project's Auth, as the platform.
  *
- * GoTrue's admin API is called from inside the auth container with the project's own
- * `service_role` key, so the key never has to leave the host and the caller only needs a platform
- * token. `service_role` is the project's master key for Auth — this is the same operation the
- * Supabase dashboard performs, not a privileged back door.
+ * GoTrue's admin API is called through the project's own public API host — the same path a client
+ * uses, which the gateway's RBAC already vets for `/auth/v1/` — rather than by exec'ing into the
+ * container, whose image ships no HTTP client. The `service_role` key stays on the server: the
+ * caller only needs a platform token. This is the same operation the Supabase dashboard performs,
+ * not a privileged back door.
  */
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
@@ -46,54 +46,57 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       user_metadata: body.userMetadata ?? {},
     })
 
-    // The key travels in the child's environment (not on the command line, which every process on
-    // the host can read) and the request body goes in on stdin.
-    const curlScript =
-      'curl -sS -X POST http://127.0.0.1:9999/admin/users ' +
-      '-H "Content-Type: application/json" -H "Authorization: Bearer $SERVICE_ROLE_KEY" ' +
-      '--data-binary @- -w "\\n%{http_code}"'
-
-    try {
-      const result = await runWithStdin(
-        'docker',
-        ['exec', '-i', '-e', 'SERVICE_ROLE_KEY', tenantContainerName(project.slug, 'auth'), 'sh', '-c', curlScript],
-        payload,
-        { timeoutMs: 60_000, env: { ...process.env, SERVICE_ROLE_KEY: serviceRole } }
-      )
-      const trimmed = result.stdout.trimEnd()
-      if (!trimmed) {
-        return Response.json({ error: result.stderr || 'Auth did not respond' }, { status: 502 })
-      }
-      const split = trimmed.lastIndexOf('\n')
-      const status = Number(trimmed.slice(split + 1)) || 502
-      const raw = trimmed.slice(0, Math.max(split, 0))
-      let user: unknown = raw
-      try {
-        user = JSON.parse(raw)
-      } catch {
-        /* keep the raw text */
-      }
-
-      await prisma.auditLog
-        .create({
-          data: {
-            action: 'project.auth_user.created',
-            targetType: 'project',
-            targetId: project.id,
-            actorId: actor.userId,
-            metadata: { slug: project.slug, email, status, via: actor.kind },
-          },
-        })
-        .catch(() => undefined)
-
+    // GoTrue's admin API is reached through the project's own public API host — the same path a
+    // client uses — rather than by exec'ing into the container: the auth image ships no HTTP client,
+    // and the public path is what the gateway's RBAC already vets for `/auth/v1/`.
+    const apiUrl = apiUrlFor(env)
+    if (!apiUrl) {
       return Response.json(
-        { created: status >= 200 && status < 300, status, user },
-        { status: status >= 200 && status < 300 ? 201 : 400 }
+        { error: 'This project has no public API URL recorded yet' },
+        { status: 409 }
       )
-    } catch (error) {
-      const err = error as { stdout?: string; stderr?: string; message?: string }
-      return Response.json({ error: err.stderr ?? err.message }, { status: 502 })
     }
+
+    let upstream: Response
+    try {
+      upstream = await fetch(`${apiUrl}/auth/v1/admin/users`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // Supabase convention: the service_role key is both the API key and the bearer.
+          apikey: serviceRole,
+          Authorization: `Bearer ${serviceRole}`,
+        },
+        body: payload,
+        redirect: 'manual',
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return Response.json({ error: `Auth unreachable: ${message}` }, { status: 502 })
+    }
+
+    const raw = await upstream.text()
+    let user: unknown = raw
+    try {
+      user = JSON.parse(raw)
+    } catch {
+      /* keep the raw text */
+    }
+
+    await prisma.auditLog
+      .create({
+        data: {
+          action: 'project.auth_user.created',
+          targetType: 'project',
+          targetId: project.id,
+          actorId: actor.userId,
+          metadata: { slug: project.slug, email, status: upstream.status, via: actor.kind },
+        },
+      })
+      .catch(() => undefined)
+
+    const ok = upstream.status >= 200 && upstream.status < 300
+    return Response.json({ created: ok, status: upstream.status, user }, { status: ok ? 201 : 400 })
   } catch (error) {
     return apiTokenErrorResponse(error)
   }
