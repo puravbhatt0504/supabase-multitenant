@@ -128,6 +128,10 @@ export function tenantEnvVars(slug: string, slot: TenantSlot, baseDomain: string
     [TENANT_ENV_KEYS.listenerPort]: String(slot.listenerPort),
     [TENANT_ENV_KEYS.publishedPort]: String(slot.publishedPort),
     [TENANT_ENV_KEYS.apiHost]: apiHost,
+    // Aliases the older readers (the Studio proxy before it learned the shared-plane names)
+    // expect, so both conventions describe the same tenant.
+    GW_HTTP_PORT: String(slot.publishedPort),
+    GW_PUBLIC_HOST: apiHost,
     [TENANT_ENV_KEYS.studioHost]: studioHost,
 
     // Clients of the API, auth redirects and Studio's snippets all read these.

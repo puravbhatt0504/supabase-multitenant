@@ -144,10 +144,26 @@ async function handle(request: NextRequest, ctx: RouteContext): Promise<Response
   //      worked; the shared gateway matches the tenant by its PUBLIC host, so that Host would
   //      match no listener and be rejected.
   //
-  // GW_HTTP_PORT is the host port of this tenant's listener on the shared gateway, and
-  // GW_PUBLIC_HOST is the host it answers for. Both are written per project at creation.
-  const gatewayPort = envMap.GW_HTTP_PORT || envMap.STUDIO_PORT || '3000'
-  const gatewayHost = envMap.GW_PUBLIC_HOST || `${slug}.localhost`
+  // The host port of this tenant's listener on the shared gateway, and the host it answers for.
+  // `GATEWAY_*` is what projects created since the shared plane carry (`GATEWAY_PUBLISHED_PORT`,
+  // `GW_API_HOST`); `GW_HTTP_PORT` / `GW_PUBLIC_HOST` is what the hand cut-over wrote. Reading only
+  // the older pair made a brand-new project dial `STUDIO_PORT` — the Studio container's own port,
+  // bound to nothing on the host — and report `ECONNREFUSED 10.0.2.1:<port>`, a message that says
+  // nothing about the actual problem. No fallback now: if neither pair is there, say so.
+  const gatewayPort = envMap.GATEWAY_PUBLISHED_PORT ?? envMap.GW_HTTP_PORT ?? null
+  const gatewayHost = envMap.GW_API_HOST ?? envMap.GW_PUBLIC_HOST ?? null
+
+  if (!gatewayPort || !gatewayHost) {
+    return NextResponse.json(
+      {
+        error: 'This project is not on the shared gateway yet',
+        detail:
+          'It records no gateway host/port. Deploy the project, which registers it — or run ' +
+          'scripts/backfill-gateway-slots.py for projects created before the shared plane.',
+      },
+      { status: 409 }
+    )
+  }
 
   const upstreamPath = rest && rest.length ? `/${rest.join('/')}` : '/'
 
