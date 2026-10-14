@@ -6,6 +6,7 @@ import { prisma } from './db'
 import { removeProjectTraefikConfig } from './traefik'
 import { getCoreBasePath, getProjectsBasePath } from './paths'
 import { composeEnv } from './compose-env'
+import { ensureTenantPostgresPassword } from './tenant-db-auth'
 import { slimProjectCompose } from './slim-compose'
 import { slotFromEnv, tenantSlot } from './tenant-gateway'
 import {
@@ -575,6 +576,19 @@ export async function deployProject(projectId: string) {
         const baseDomain = platformBaseDomainOrThrow()
         await writeTenantRouterFile({ slug: project.slug, slot, baseDomain })
         const synced = await registerTenantOnGateway(project.slug)
+        // The cluster's `postgres` password can drift from the project's configuration — the cluster
+        // keeps the one it was initialised with while the `.env` is rewritten — and then every Studio
+        // page that reads the database fails ("password authentication failed for user \"postgres\"")
+        // while Auth and REST keep working, because they authenticate with their own roles. Reconcile
+        // here, where a deploy already has the containers up and the configuration in hand.
+        try {
+          const dbAuth = await ensureTenantPostgresPassword(project.slug, env.POSTGRES_PASSWORD ?? '')
+          if (dbAuth.status !== 'ok') {
+            console.log(`Tenant database credentials (${project.slug}): ${dbAuth.status} — ${dbAuth.detail}`)
+          }
+        } catch (dbAuthError) {
+          console.warn('Could not reconcile the tenant database password:', dbAuthError)
+        }
         const ports = Object.entries(synced.ports)
           .map(([tenantSlug, port]) => `${tenantSlug}:${port}`)
           .join(', ')

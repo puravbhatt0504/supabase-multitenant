@@ -339,3 +339,25 @@ model PanelSettings {
 
   @@map("panel_settings")
 }
+
+// Programmatic access to the platform (#160).
+//
+// Only the SHA-256 of the secret is stored: a dump of this table is not a set of working
+// credentials. `prefix` keeps the first characters so a token can be identified and revoked from a
+// list. The scope is explicit (`read` < `write` < `admin`) and re-checked per request along with
+// the creator's current system role, so a token cannot outlive the authority that justified it.
+model ApiToken {
+  id          String    @id @default(uuid())
+  name        String
+  tokenHash   String    @unique
+  prefix      String
+  scope       String    @default("admin")
+  createdById String?
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+
+  @@index([createdById])
+  @@map("api_tokens")
+}

@@ -189,6 +189,16 @@ async function handle(request: NextRequest, ctx: RouteContext): Promise<Response
         tenantContainerName(slug, 'studio'),
         tenantContainerName(slug, 'meta'),
       ])
+      // Opening Studio is exactly when a drifted database password becomes visible — every page that
+      // reads the database fails while Auth and REST work. Cheap to check (one query), so check here
+      // rather than letting the person discover it.
+      try {
+        const { ensureTenantPostgresPassword } = await import('@/lib/tenant-db-auth')
+        const dbAuth = await ensureTenantPostgresPassword(slug, envMap.POSTGRES_PASSWORD ?? '')
+        if (dbAuth.status !== 'ok') console.log(`Studio opened: database credentials ${dbAuth.status} (${dbAuth.detail})`)
+      } catch (dbAuthError) {
+        console.warn('Could not reconcile the tenant database password:', dbAuthError)
+      }
     } catch (error) {
       // Starting Studio must not block reaching Studio; if it fails the proxy below reports it.
       console.warn('Could not start the dashboard service group:', error)
