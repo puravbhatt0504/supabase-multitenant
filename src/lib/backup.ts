@@ -1,7 +1,8 @@
 import { promises as fs, createWriteStream, createReadStream } from 'fs'
 import * as path from 'path'
 import { createHash } from 'crypto'
-import { spawn } from 'child_process'
+import { exec, spawn } from 'child_process'
+import { promisify } from 'util'
 import { prisma } from './db'
 import { getBackupsBasePath } from './paths'
 
@@ -22,6 +23,8 @@ export type BackupKind = (typeof BACKUP_KINDS)[number]
 
 /** Schemas dumped by default: application data only. */
 export const DEFAULT_SCHEMAS = ['public']
+
+const execAsync = promisify(exec)
 
 /**
  * Platform-managed schemas. Dumping these into a *fresh* project would clash
@@ -303,6 +306,33 @@ async function sha256File(filePath: string): Promise<string> {
  * include `auth` for a full platform migration) when you know the target
  * expects those objects.
  */
+/**
+ * A backup that cannot start because of how the project *is*, not because something failed.
+ *
+ * Distinct from a failed dump so a caller can answer 409 with an instruction ("deploy it first")
+ * instead of 500 with a Docker error. The case that produced this: pressing "Back up now" while the
+ * project's containers were still being created, which surfaced as
+ * `No such container: <slug>-db` — true, and useless to the person reading it.
+ */
+export class BackupNotReadyError extends Error {
+  readonly status = 409
+
+  constructor(message: string) {
+    super(message)
+    this.name = 'BackupNotReadyError'
+  }
+}
+
+/** Is a container of that exact name running? */
+async function containerIsRunning(name: string): Promise<boolean> {
+  try {
+    const { stdout } = await execAsync(`docker ps -q --filter name=^${name}$`, { timeout: 15_000 })
+    return stdout.trim().length > 0
+  } catch {
+    return false
+  }
+}
+
 export async function createDatabaseBackup(
   project: { id: string; slug: string },
   options: { schemas?: string[] } = {}
@@ -314,6 +344,17 @@ export async function createDatabaseBackup(
   const filePath = path.join(dir, fileName)
 
   await fs.mkdir(dir, { recursive: true })
+
+  // A project that has never been deployed, or is still starting, has no database container to dump
+  // from. Say so before creating a backup row: the person can then deploy and retry, instead of
+  // reading a Docker error about a container they never asked for.
+  const container = dbContainerName(project.slug)
+  if (!(await containerIsRunning(container))) {
+    throw new BackupNotReadyError(
+      `The database of ${project.slug} is not running (no ${container} container). ` +
+        'Deploy the project — or wait for the deployment that is in progress — and take the backup again.'
+    )
+  }
 
   const row = await prisma.projectBackup.create({
     data: {
@@ -350,6 +391,14 @@ export async function createDatabaseBackup(
       where: { id: row.id },
       data: { status: 'failed', error: stderr.slice(-2000) || `pg_dump exit ${code}` },
     })
+    // The container can still vanish between the check and the dump (a deploy in progress
+    // recreating it); report that as "not ready" rather than as a dump failure.
+    if (/No such container/i.test(stderr)) {
+      throw new BackupNotReadyError(
+        `The database of ${project.slug} stopped while the backup ran (a deployment may be in ` +
+          'progress). Try again once it is running.'
+      )
+    }
     throw new Error(`pg_dump failed for ${project.slug}: ${stderr.slice(-400)}`)
   }
 

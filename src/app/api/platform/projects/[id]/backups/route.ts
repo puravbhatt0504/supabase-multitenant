@@ -5,6 +5,7 @@ import {
   BACKUP_KINDS,
   DEFAULT_RETENTION,
   type BackupKind,
+  BackupNotReadyError,
   createDatabaseBackup,
   createStorageBackup,
   listBackups,
@@ -40,10 +41,18 @@ export async function POST(request: NextRequest, ctx: { params: Promise<{ id: st
     }
 
     const target = { id: project.id, slug: project.slug }
-    const created =
-      kind === 'database'
-        ? await createDatabaseBackup(target, { schemas: body.schemas })
-        : await createStorageBackup(target)
+    let created
+    try {
+      created =
+        kind === 'database'
+          ? await createDatabaseBackup(target, { schemas: body.schemas })
+          : await createStorageBackup(target)
+    } catch (error) {
+      if (error instanceof BackupNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: error.status })
+      }
+      throw error
+    }
 
     const pruned = await pruneBackups(project.id, DEFAULT_RETENTION)
 

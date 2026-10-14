@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireProjectPermission } from '@/lib/access'
 import {
   BACKUP_KINDS,
+  BackupNotReadyError,
   DEFAULT_RETENTION,
   createDatabaseBackup,
   createStorageBackup,
@@ -51,10 +52,19 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
 
     const project = { id: access.project.id, slug: access.project.slug }
 
-    const created =
-      kind === 'database'
-        ? await createDatabaseBackup(project, { schemas: body?.schemas })
-        : await createStorageBackup(project)
+    let created
+    try {
+      created =
+        kind === 'database'
+          ? await createDatabaseBackup(project, { schemas: body?.schemas })
+          : await createStorageBackup(project)
+    } catch (error) {
+      // "The project is not running yet" is an instruction, not a server fault.
+      if (error instanceof BackupNotReadyError) {
+        return NextResponse.json({ error: error.message }, { status: error.status })
+      }
+      throw error
+    }
 
     // Apply retention immediately so a schedule can't grow without bound.
     const pruned = await pruneBackups(id, DEFAULT_RETENTION)
