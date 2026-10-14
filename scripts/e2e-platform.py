@@ -28,13 +28,19 @@ import urllib.request
 DEFAULT_PANEL = 'https://fmhych0pt0irtksig4kciewg.213.47.80.26.sslip.io'
 TOKEN_FILE = '/home/z370n/.secure-upload/platform-api-token.txt'
 
-steps: list[tuple[str, bool, str]] = []
+steps: list[tuple[str, bool, str, float]] = []
 context: dict[str, str] = {}
+metrics: dict[str, object] = {}
+_last = [time.monotonic()]
 
 
 def record(name: str, ok: bool, detail: str = '') -> bool:
-    steps.append((name, ok, detail))
-    print(f'  [{"PASS" if ok else "FAIL"}] {name}' + (f' — {detail}' if detail else ''))
+    now = time.monotonic()
+    elapsed = now - _last[0]
+    steps.append((name, ok, detail, elapsed))
+    _last[0] = now
+    print(f'  [{"PASS" if ok else "FAIL"}] {name} ({elapsed:.1f}s)'
+          + (f' — {detail}' if detail else ''))
     return ok
 
 
@@ -162,6 +168,14 @@ def main() -> int:
         if not ok:
             return finish(1)
 
+        # Metrics: what this run actually materialised.
+        containers = sh(f"docker ps --format '{{{{.Names}}}}' | grep -c '^{project_slug}-' || true")
+        rss = sh(f"docker stats --no-stream --format '{{{{.MemUsage}}}}' "
+                 f"$(docker ps --format '{{{{.Names}}}}' | grep '^{project_slug}-' | tr '\n' ' ') 2>/dev/null "
+                 f"| awk -F'/' '{{gsub(/[^0-9.]/,\"\",$1); s+=$1}} END {{printf \"%.0f\", s}}'")
+        metrics['containers_running'] = int(containers) if containers.isdigit() else containers
+        metrics['containers_memory_mib'] = rss
+
         api_url = creds['api']['url']
         anon = creds['api']['anonKey']
         service = creds['api']['serviceRoleKey']
@@ -244,6 +258,12 @@ def main() -> int:
         ok = status == 201 and isinstance(body, dict) and body.get('backup')
         record('takes a database backup', bool(ok), f'HTTP {status}')
         backup_name = body.get('backup', {}).get('fileName') if isinstance(body, dict) else None
+        if isinstance(body, dict) and isinstance(body.get('backup'), dict):
+            metrics['backup_file'] = body['backup'].get('fileName') or body['backup'].get('id')
+            metrics['backup_bytes'] = body['backup'].get('sizeBytes') or body['backup'].get('size')
+        db_tables = sh(f"docker exec {project_slug}-db psql -U supabase_admin -d supabase_multitenant "
+                       f"-tAc \"select count(*) from pg_tables where schemaname='public'\"")
+        metrics['public_tables_at_backup'] = db_tables
         if ok:
             status, listing = call(args.panel, 'GET', f'/api/platform/projects/{project_id}/backups', token)
             record('the backup is listed for the project',
@@ -276,21 +296,27 @@ def main() -> int:
     finally:
         if not args.keep and project_id:
             # Best effort: never leave a running tenant behind because a check failed earlier.
-            if not any('deletes the project' in n and ok for n, ok, _ in steps):
+            if not any('deletes the project' in n and ok for n, ok, _detail, _secs in steps):
                 call(args.panel, 'DELETE', f'/api/platform/projects/{project_id}', token, timeout=600)
                 print('\n  (cleanup) removed the project after the failure')
 
-    return finish(0 if all(ok for _n, ok, _d in steps) else 1)
+    return finish(0 if all(ok for _n, ok, _d, _s in steps) else 1)
 
 
 def finish(code: int) -> int:
     print('\n=== summary ===')
-    for name, ok, detail in steps:
-        print(f'  {"PASS" if ok else "FAIL"}  {name}' + (f'  [{detail}]' if detail and not ok else ''))
-    passed = sum(1 for _n, ok, _d in steps if ok)
-    print(f'\n  {passed}/{len(steps)} steps passed')
+    for name, ok, detail, secs in steps:
+        print(f'  {"PASS" if ok else "FAIL"}  {name:<58} {secs:6.1f}s'
+              + (f'  [{detail}]' if detail and not ok else ''))
+    passed = sum(1 for _n, ok, _d, _s in steps if ok)
+    total = sum(secs for *_r, secs in steps)
+    slowest = max(steps, key=lambda s: s[3]) if steps else ('', True, '', 0.0)
+    print(f'\n  {passed}/{len(steps)} steps passed  ·  wall clock {total:.0f}s'
+          f'  ·  slowest step "{slowest[0]}" ({slowest[3]:.0f}s)')
+    if metrics:
+        print('  metrics: ' + json.dumps(metrics))
     if context:
-        print(f'  artifacts: {json.dumps(context)}')
+        print('  artifacts: ' + json.dumps(context))
     return code
 
 
