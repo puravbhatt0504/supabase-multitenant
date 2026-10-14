@@ -46,11 +46,20 @@ export async function POST(request: NextRequest) {
       organizationId = org.id
     }
 
-    const project = await createProject(name, actor.userId, body.description, {
+    // createProject reports success rather than throwing, so an unusable result is surfaced here
+    // instead of half-written rows.
+    const created = await createProject(name, actor.userId, body.description, {
       organizationId,
       region: body.region,
       databasePassword: body.databasePassword,
     })
+    if (!created?.success || !created.project) {
+      return NextResponse.json(
+        { error: 'Project creation failed', detail: created?.error ?? null },
+        { status: 500 }
+      )
+    }
+    const project = created.project
 
     await prisma.auditLog
       .create({
