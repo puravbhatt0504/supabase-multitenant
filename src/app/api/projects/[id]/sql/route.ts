@@ -4,6 +4,20 @@ import { runWithStdin } from '@/lib/exec-stdin'
 import { tenantContainerName } from '@/lib/gateway'
 
 /**
+ * psql arguments for a statement.
+ *
+ * `aligned` is psql's table — what a person wants to read. `unaligned` (`-tA`) is one value per
+ * line, which is what a script wants: parsing an aligned table means regexing around headers and
+ * separators, and that is where a caller silently reads the header instead of the value.
+ */
+export function psqlArgs(database: string, format: 'aligned' | 'unaligned' = 'aligned'): string[] {
+  const args = ['exec', '-i', '', 'psql', '-U', 'supabase_admin', '-d', database, '-v', 'ON_ERROR_STOP=1']
+  if (format === 'unaligned') args.push('-tA')
+  args.push('-f', '-')
+  return args
+}
+
+/**
  * Run SQL against a project's database as the platform.
  *
  * This is the part of "superadmin" that is not a browser: a coding agent that needs to inspect a
@@ -23,7 +37,11 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     })
     if (!project) return Response.json({ error: 'No such project' }, { status: 404 })
 
-    const body = (await request.json().catch(() => ({}))) as { sql?: string; database?: string }
+    const body = (await request.json().catch(() => ({}))) as {
+      sql?: string
+      database?: string
+      format?: 'aligned' | 'unaligned'
+    }
     const sql = (body.sql ?? '').trim()
     if (!sql) return Response.json({ error: 'Send {"sql": "..."}' }, { status: 400 })
 
@@ -35,13 +53,9 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     // a question. `-v ON_ERROR_STOP=1` makes psql exit non-zero on a bad statement.
     const safeDatabase = database.replace(/[^a-zA-Z0-9_]/g, '')
     try {
-      const result = await runWithStdin(
-        'docker',
-        ['exec', '-i', container, 'psql', '-U', 'supabase_admin', '-d', safeDatabase,
-         '-v', 'ON_ERROR_STOP=1', '-f', '-'],
-        sql,
-        { timeoutMs: 120_000 }
-      )
+      const args = psqlArgs(safeDatabase, body.format ?? 'aligned')
+      args[2] = container
+      const result = await runWithStdin('docker', args, sql, { timeoutMs: 120_000 })
       if (result.code !== 0) {
         await prisma.auditLog
           .create({
@@ -65,7 +79,13 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
           },
         })
         .catch(() => undefined)
-      return Response.json({ ok: true, database: safeDatabase, stdout: result.stdout, stderr: result.stderr || null })
+      return Response.json({
+        ok: true,
+        database: safeDatabase,
+        format: body.format ?? 'aligned',
+        stdout: result.stdout,
+        stderr: result.stderr || null,
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return Response.json({ ok: false, database: safeDatabase, error: message }, { status: 502 })

@@ -188,12 +188,16 @@ def main() -> int:
         record('creates a table and writes a row (CREATE TABLE, INSERT)',
                status == 200 and isinstance(body, dict) and body.get('ok'), f'HTTP {status}')
 
-        status, body = call(args.panel, 'POST', f'/api/projects/{project_id}/sql', token,
-                            {'sql': 'select count(*)::int as n from e2e_items'})
-        rows = None
-        if status == 200 and isinstance(body, dict):
-            m = re.search(r'^(\d+)$', body.get('stdout', '').strip().splitlines()[0] if body.get('stdout') else '')
-            rows = int(m.group(1)) if m else None
+        def count_rows(label: str) -> int | None:
+            status, body = call(args.panel, 'POST', f'/api/projects/{project_id}/sql', token,
+                                {'sql': 'select count(*) from e2e_items', 'format': 'unaligned'})
+            if status != 200 or not isinstance(body, dict):
+                return None
+            text = (body.get('stdout') or '').strip()
+            match = re.match(r'^(\d+)$', text)
+            return int(match.group(1)) if match else None
+
+        rows = count_rows('select')
         record('reads the row back (SELECT)', rows == 1, f'rows={rows}')
 
         # 6. API keys on the data plane: anon for reading, service_role for privileged work
@@ -209,12 +213,7 @@ def main() -> int:
         record('the service_role API key writes through the REST API',
                status in (200, 201) and isinstance(body, list) and len(body) == 1, f'HTTP {status}')
 
-        status, rows_body = call(args.panel, 'POST', f'/api/projects/{project_id}/sql', token,
-                                 {'sql': 'select count(*)::int as n from e2e_items'})
-        count = None
-        if status == 200 and isinstance(rows_body, dict) and rows_body.get('stdout'):
-            m = re.search(r'^(\d+)$', rows_body['stdout'].strip().splitlines()[0])
-            count = int(m.group(1)) if m else None
+        count = count_rows('after write')
         record('the write is visible in the database', count == 2, f'rows={count}')
 
         # 7. Auth: a real end user, created by the platform and signing in on its own
