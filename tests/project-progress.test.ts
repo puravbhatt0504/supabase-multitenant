@@ -25,7 +25,8 @@ describe("reading a project's containers", () => {
 
   it('names the services that are not there at all', () => {
     const shape = summarizeContainers([`${SLUG}-db|Up 1 second (healthy)`], ['db', 'auth', 'rest'], SLUG)
-    expect(shape.missing).toEqual([`${SLUG}-auth`, `${SLUG}-rest`])
+    // Service names, not container names: this is what a message to a person needs.
+    expect(shape.missing).toEqual(['auth', 'rest'])
   })
 })
 
