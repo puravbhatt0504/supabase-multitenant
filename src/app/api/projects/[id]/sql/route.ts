@@ -61,7 +61,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
         .create({
           data: {
             action: 'project.sql', targetType: 'project', targetId: project.id, actorId: actor.userId,
-            metadata: { slug, database, bytes: sql.length, via: actor.kind },
+            metadata: { slug: project.slug, database, bytes: sql.length, via: actor.kind },
           },
         })
         .catch(() => undefined)

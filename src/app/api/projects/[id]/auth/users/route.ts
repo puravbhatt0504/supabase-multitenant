@@ -81,7 +81,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
             targetType: 'project',
             targetId: project.id,
             actorId: actor.userId,
-            metadata: { slug, email, status, via: actor.kind },
+            metadata: { slug: project.slug, email, status, via: actor.kind },
           },
         })
         .catch(() => undefined)
