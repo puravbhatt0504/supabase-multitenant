@@ -166,7 +166,9 @@ export async function projectProgress(slug: string): Promise<ProjectProgress | n
   let onGateway = false
   try {
     const { stdout } = await execAsync(
-      `docker exec smbt-shared-gateway sh -c "grep -c '${slug}-gw' /etc/envoy/cds.yaml || true"`,
+      // The gateway's clusters are named after the tenant's services (`<slug>-auth`), not after
+      // the container alias, so match the slug itself.
+      `docker exec smbt-shared-gateway sh -c "grep -c '${slug}' /etc/envoy/cds.yaml || true"`,
       { timeout: 15_000 }
     )
     onGateway = Number(stdout.trim()) > 0
