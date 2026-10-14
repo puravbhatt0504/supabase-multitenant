@@ -151,6 +151,15 @@ async function handle(request: NextRequest, ctx: RouteContext): Promise<Response
 
   const upstreamPath = rest && rest.length ? `/${rest.join('/')}` : '/'
 
+  // Studio's own login path has no meaning in this deployment: the panel session is the single
+  // authenticated entry point (see the file header), and Studio ships no login page here, so
+  // `/auth/login` answers 404. Browsers still arrive on it — Studio's client redirects
+  // unauthenticated visitors there, and it is what ends up in the address bar — so send them to the
+  // project instead of showing a dead end.
+  if (viaStudioHost && rest && rest[0] === 'auth') {
+    return new Response(null, { status: 307, headers: { location: '/project/default' } })
+  }
+
   // Studio answers `/` itself with a redirect to `/project/<default>`, but that redirect loses the
   // panel's `/gateway/studio/<slug>` prefix on the return trip, so the browser lands on a 404. Send
   // the browser straight to the project path, keeping it inside this route so every asset URL stays
