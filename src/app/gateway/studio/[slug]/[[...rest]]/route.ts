@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { request as httpRequest } from 'node:http'
 import path from 'node:path'
 import { validateSession } from '@/lib/auth'
 import { SESSION_COOKIE_NAME } from '@/lib/session-cookie'
@@ -30,6 +31,57 @@ function loginRedirect(_request: NextRequest, pathname: string): Response {
   return new Response(null, {
     status: 307,
     headers: { location: `/auth/login?next=${next}` },
+  })
+}
+
+/**
+ * Proxy one request to the tenant's listener on the shared gateway.
+ *
+ * Deliberately NOT `fetch`. The gateway selects the tenant by the `Host` header, and the Fetch spec
+ * makes `Host` a *forbidden* header: `fetch` silently replaces it with the connection target's
+ * authority — `10.0.2.1:11130` — which matches no tenant's listener, so envoy answers
+ * `403 RBAC: access denied`. That is precisely what this route returned for every Studio request
+ * (for every user, including the owner) while the identical call from curl served Studio fine.
+ * Node's `http.request` honours the header, so the tenant is selected correctly.
+ */
+async function gatewayRequest(
+  target: URL,
+  init: { method: string; headers: Headers; body?: ArrayBuffer }
+): Promise<Response> {
+  return await new Promise<Response>((resolve, reject) => {
+    const req = httpRequest(
+      {
+        host: target.hostname,
+        port: Number(target.port || 80),
+        path: `${target.pathname}${target.search}`,
+        method: init.method,
+        headers: Object.fromEntries(init.headers.entries()),
+      },
+      (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () => {
+          const responseHeaders = new Headers()
+          for (const [key, value] of Object.entries(res.headers)) {
+            if (value === undefined) continue
+            // Repeated headers (notably set-cookie) must stay separate, not comma-joined.
+            for (const single of Array.isArray(value) ? value : [value]) {
+              responseHeaders.append(key, single)
+            }
+          }
+          resolve(
+            new Response(Buffer.concat(chunks), {
+              status: res.statusCode ?? 502,
+              statusText: res.statusMessage,
+              headers: responseHeaders,
+            })
+          )
+        })
+      }
+    )
+    req.on('error', reject)
+    if (init.body && init.body.byteLength > 0) req.write(Buffer.from(init.body))
+    req.end()
   })
 }
 
@@ -183,19 +235,16 @@ async function handle(request: NextRequest, ctx: RouteContext): Promise<Response
   const gatewayBasicAuth = process.env.SHARED_GATEWAY_BASIC_AUTH
   if (gatewayBasicAuth) headers.set('authorization', `Basic ${gatewayBasicAuth}`)
 
-  const init: RequestInit = { method: request.method, headers, redirect: 'manual' }
-  if (!['GET', 'HEAD'].includes(request.method)) {
-    try {
-      const ab = await request.arrayBuffer()
-      if (ab.byteLength > 0) init.body = ab
-    } catch {
-      /* no body */
-    }
-  }
+  const body =
+    !['GET', 'HEAD'].includes(request.method) ? await request.arrayBuffer().catch(() => undefined) : undefined
 
   let upstream: Response
   try {
-    upstream = await fetch(target.toString(), init)
+    upstream = await gatewayRequest(target, {
+      method: request.method,
+      headers,
+      body: body && body.byteLength > 0 ? body : undefined,
+    })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return NextResponse.json(
@@ -226,8 +275,11 @@ async function handle(request: NextRequest, ctx: RouteContext): Promise<Response
           tenantContainerName(slug, 'meta'),
         ])
         // One retry, with the same request shape.
-        const retryInit: RequestInit = { ...init }
-        upstream = await fetch(target.toString(), retryInit)
+        upstream = await gatewayRequest(target, {
+          method: request.method,
+          headers,
+          body: body && body.byteLength > 0 ? body : undefined,
+        })
       }
     } catch (error) {
       console.warn('Could not cold-start the dashboard service group:', error)
