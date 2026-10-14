@@ -11,12 +11,16 @@ import { tenantContainerName } from '@/lib/gateway'
  * token. `service_role` is the project's master key for Auth — this is the same operation the
  * Supabase dashboard performs, not a privileged back door.
  */
-export async function POST(request: Request, ctx: { params: Promise<{ slug: string }> }) {
+export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     const actor = await requirePlatformAccess(request, 'admin')
-    const { slug } = await ctx.params
+    const { id } = await ctx.params
 
-    const project = await prisma.project.findUnique({ where: { slug }, include: { envVars: true } })
+    // The path segment accepts the project's slug (what the panel shows) or its id.
+    const project = await prisma.project.findFirst({
+      where: { OR: [{ slug: id }, { id }] },
+      include: { envVars: true },
+    })
     if (!project) return Response.json({ error: 'No such project' }, { status: 404 })
 
     const body = (await request.json().catch(() => ({}))) as {
@@ -52,7 +56,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ slug: stri
     try {
       const result = await runWithStdin(
         'docker',
-        ['exec', '-i', '-e', 'SERVICE_ROLE_KEY', tenantContainerName(slug, 'auth'), 'sh', '-c', curlScript],
+        ['exec', '-i', '-e', 'SERVICE_ROLE_KEY', tenantContainerName(project.slug, 'auth'), 'sh', '-c', curlScript],
         payload,
         { timeoutMs: 60_000, env: { ...process.env, SERVICE_ROLE_KEY: serviceRole } }
       )

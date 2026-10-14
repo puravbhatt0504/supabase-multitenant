@@ -11,12 +11,16 @@ import { tenantContainerName } from '@/lib/gateway'
  * published and no password copied around. `admin` scope only, and every statement is recorded in
  * the audit log — an unreviewable path to arbitrary SQL is not a feature.
  */
-export async function POST(request: Request, ctx: { params: Promise<{ slug: string }> }) {
+export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     const actor = await requirePlatformAccess(request, 'admin')
-    const { slug } = await ctx.params
+    const { id } = await ctx.params
 
-    const project = await prisma.project.findUnique({ where: { slug }, include: { envVars: true } })
+    // The path segment accepts the project's slug (what the panel shows) or its id.
+    const project = await prisma.project.findFirst({
+      where: { OR: [{ slug: id }, { id }] },
+      include: { envVars: true },
+    })
     if (!project) return Response.json({ error: 'No such project' }, { status: 404 })
 
     const body = (await request.json().catch(() => ({}))) as { sql?: string; database?: string }
@@ -25,7 +29,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ slug: stri
 
     const env = Object.fromEntries(project.envVars.map((e) => [e.key, e.value]))
     const database = body.database ?? env.POSTGRES_DB ?? 'supabase_multitenant'
-    const container = tenantContainerName(slug, 'db')
+    const container = tenantContainerName(project.slug, 'db')
 
     // The statement goes in on stdin: it never appears in the process list, and quoting stops being
     // a question. `-v ON_ERROR_STOP=1` makes psql exit non-zero on a bad statement.
@@ -44,7 +48,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ slug: stri
             data: {
               action: 'project.sql.failed', targetType: 'project', targetId: project.id,
               actorId: actor.userId,
-              metadata: { slug, database: safeDatabase, via: actor.kind },
+              metadata: { slug: project.slug, database: safeDatabase, via: actor.kind },
             },
           })
           .catch(() => undefined)

@@ -11,12 +11,16 @@ import { platformBaseDomainOrThrow } from '@/lib/tenant-provisioning'
  * on the same host — including a one-off `psql` container — and `sql` runs statements without
  * needing the port published at all.
  */
-export async function GET(request: Request, ctx: { params: Promise<{ slug: string }> }) {
+export async function GET(request: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     const actor = await requirePlatformAccess(request, 'admin')
-    const { slug } = await ctx.params
+    const { id } = await ctx.params
 
-    const project = await prisma.project.findUnique({ where: { slug }, include: { envVars: true } })
+    // The path segment accepts the project's slug (what the panel shows) or its id.
+    const project = await prisma.project.findFirst({
+      where: { OR: [{ slug: id }, { id }] },
+      include: { envVars: true },
+    })
     if (!project) return Response.json({ error: 'No such project' }, { status: 404 })
 
     const env = Object.fromEntries(project.envVars.map((e) => [e.key, e.value]))
@@ -45,9 +49,9 @@ export async function GET(request: Request, ctx: { params: Promise<{ slug: strin
         }`,
       },
       howTo: {
-        sql: `POST /api/projects/${slug}/sql {"sql": "select 1"}`,
-        createUser: `POST /api/projects/${slug}/auth/users {"email": "...", "password": "..."}`,
-        network: `docker run --rm --network ${slug}_default postgres:16-alpine psql <database.url>`,
+        sql: `POST /api/projects/${project.slug}/sql {"sql": "select 1"}`,
+        createUser: `POST /api/projects/${project.slug}/auth/users {"email": "...", "password": "..."}`,
+        network: `docker run --rm --network ${project.slug}_default postgres:16-alpine psql <database.url>`,
       },
       baseDomain,
       requestedBy: { kind: actor.kind, email: actor.email },
