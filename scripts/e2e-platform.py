@@ -264,6 +264,12 @@ def main() -> int:
         db_tables = sh(f"docker exec {project_slug}-db psql -U supabase_admin -d supabase_multitenant "
                        f"-tAc \"select count(*) from pg_tables where schemaname='public'\"")
         metrics['public_tables_at_backup'] = db_tables
+        # A dump can be valid, non-empty and still contain nothing: the backup once read the wrong
+        # database and reported success. Open the artifact and require the table we wrote.
+        if ok and backup_name:
+            contents = sh(f"docker exec -i {project_slug}-db pg_restore -l < /data/backups/{project_slug}/{backup_name}")
+            record('the backup contains the table the test wrote',
+                   'TABLE public e2e_items' in contents, f'{len(contents.splitlines())} toc lines')
         if ok:
             status, listing = call(args.panel, 'GET', f'/api/platform/projects/{project_id}/backups', token)
             record('the backup is listed for the project',

@@ -271,8 +271,36 @@ export function dbContainerName(slug: string): string {
   return `${slug}-db`
 }
 
+/**
+ * Which database holds a project's data. Projects born before the POSTGRES_DB fix keep it in
+ * `postgres`; every project born since keeps it in `supabase_multitenant`. Guessing one of them
+ * backs up an empty database and reports success - the dump is valid, it just contains nothing.
+ *
+ * The running db container is the source of truth (it is what auth and rest actually connect to).
+ * The value stored in the panel's own database has been seen to disagree with it.
+ */
+export function databaseFromContainerEnv(envLines: string[]): string {
+  for (const line of envLines) {
+    const match = /^POSTGRES_DB=(.+)$/.exec(line.trim())
+    if (match && /^[A-Za-z0-9_]+$/.test(match[1])) return match[1]
+  }
+  return 'postgres'
+}
+
+export async function tenantDatabaseName(slug: string): Promise<string> {
+  const { code, stdout } = await run('docker', [
+    'inspect',
+    '--format',
+    '{{range .Config.Env}}{{println .}}{{end}}',
+    dbContainerName(slug),
+  ])
+  if (code !== 0) throw new Error(`Could not read the database name of ${slug} (docker inspect exit ${code})`)
+  return databaseFromContainerEnv(stdout.split('\n'))
+}
+
 /** Names of tables the application itself owns in a project's public schema. */
 export async function publicTableCount(slug: string): Promise<number> {
+  const database = await tenantDatabaseName(slug)
   const { code, stdout } = await run('docker', [
     'exec',
     dbContainerName(slug),
@@ -280,7 +308,7 @@ export async function publicTableCount(slug: string): Promise<number> {
     '-U',
     'postgres',
     '-d',
-    'postgres',
+    database,
     '-tAc',
     "select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'",
   ])
@@ -366,6 +394,7 @@ export async function createDatabaseBackup(
     },
   })
 
+  const database = await tenantDatabaseName(project.slug)
   const args = [
     'exec',
     '-i',
@@ -377,7 +406,7 @@ export async function createDatabaseBackup(
     '-U',
     'postgres',
     '-d',
-    'postgres',
+    database,
   ]
   for (const schema of schemas) {
     args.push(`--schema=${schema}`)
@@ -512,6 +541,7 @@ export async function restoreDatabaseBackup(
     overwrite: options.overwrite ?? false,
   })
 
+  const database = await tenantDatabaseName(target.slug)
   const args = [
     'exec',
     '-i',
@@ -520,7 +550,7 @@ export async function restoreDatabaseBackup(
     '-U',
     'postgres',
     '-d',
-    'postgres',
+    database,
     '--no-owner',
     '--no-acl',
     '--clean',
