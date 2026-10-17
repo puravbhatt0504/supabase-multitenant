@@ -252,6 +252,26 @@ def main() -> int:
                    status == 200 and isinstance(who, dict) and who.get('email') == email,
                    f'HTTP {status}')
 
+        # 7b. social sign-in: configuring a provider must change what the project's Auth does.
+        # Asserted on the wire, not on a saved flag: /authorize must send the browser to GitHub with
+        # the client id we configured, and must not have done so before.
+        probe = f"curl -s -o /dev/null -w '%{{http_code}} %{{redirect_url}}' -H 'apikey: {anon}' '{api_url}/auth/v1/authorize?provider=github'"
+        before = sh(probe)
+        status, body = call(args.panel, 'POST', f'/api/platform/projects/{project_id}/auth/providers', token,
+                            {'provider': 'github', 'enabled': True, 'clientId': 'e2e-client-id', 'secret': 'e2e-client-secret'},
+                            timeout=180)
+        record('configures GitHub sign-in for the project', status == 200, f'HTTP {status}')
+        wait_until = time.monotonic() + 60
+        after = sh(probe)
+        while 'github.com/login/oauth/authorize' not in after and time.monotonic() < wait_until:
+            time.sleep(2)
+            after = sh(probe)
+        record('Auth now redirects to GitHub with the configured client id',
+               'github.com/login/oauth/authorize' in after and 'client_id=e2e-client-id' in after
+               and 'github.com' not in before, after.split('&')[0][:90])
+        status, body = call(args.panel, 'GET', f'/api/platform/projects/{project_id}/auth/providers', token)
+        record('the client secret is never returned', status == 200 and 'e2e-client-secret' not in json.dumps(body))
+
         # 8. backup
         status, body = call(args.panel, 'POST', f'/api/platform/projects/{project_id}/backups',
                             token, {'kind': 'database'}, timeout=600)
