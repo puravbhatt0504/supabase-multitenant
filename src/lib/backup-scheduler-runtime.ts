@@ -9,7 +9,12 @@
  */
 
 import { prisma } from '@/lib/db'
-import { DEFAULT_RETENTION, createDatabaseBackup, pruneBackups } from '@/lib/backup'
+import {
+  BackupNotReadyError,
+  DEFAULT_RETENTION,
+  createDatabaseBackup,
+  pruneBackups,
+} from '@/lib/backup'
 import {
   DEFAULT_BACKUP_INTERVAL_HOURS,
   projectsDueForBackup,
@@ -56,6 +61,12 @@ export async function backupPass(intervalMs: number): Promise<void> {
       } catch (error) {
         // One project failing (not running, disk full) must not stop the others.
         lastFailed.set(project.id, Date.now())
+        if (error instanceof BackupNotReadyError) {
+          // Not a failure of the backup: the project has no running database (stopped, or a row
+          // whose containers are gone). Say so once per retry window, at info level.
+          console.log(`[backup-scheduler] ${project.slug} skipped: its database is not running`)
+          continue
+        }
         console.error(
           `[backup-scheduler] ${project.slug} failed: ${error instanceof Error ? error.message : error}`
         )
