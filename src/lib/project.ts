@@ -3,6 +3,7 @@ import * as path from 'path'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { prisma } from './db'
+import { writeSecretFile } from './secret-file'
 import { removeProjectTraefikConfig } from './traefik'
 import { getCoreBasePath, getProjectsBasePath } from './paths'
 import { composeEnv } from './compose-env'
@@ -254,7 +255,7 @@ export async function createProject(
     await fs.writeFile(dockerComposeFile, dockerComposeContent)
 
     // The env_file above must exist or `docker compose up` fails; start empty.
-    await fs.writeFile(path.join(projectDir, 'docker', FUNCTIONS_ENV_FILE), '')
+    await writeSecretFile(path.join(projectDir, 'docker', FUNCTIONS_ENV_FILE), '')
 
     // Generate unique default port values to prevent conflicts
     const basePort = 8000 + (timestamp % 10000) // Use last 4 digits of timestamp for uniqueness
@@ -343,7 +344,7 @@ export async function createProject(
       .map(([key, value]) => `${key}=${value}`)
       .join('\n')
 
-    await fs.writeFile(envFilePath, envContent)
+    await writeSecretFile(envFilePath, envContent)
 
     // Save environment variables to database
     for (const [key, value] of Object.entries(defaultEnvVars)) {
@@ -409,7 +410,7 @@ export async function updateProjectEnvVars(projectId: string, envVars: Record<st
       .map(([key, value]) => `${key}=${value}`)
       .join('\n')
 
-    await fs.writeFile(envFilePath, envContent)
+    await writeSecretFile(envFilePath, envContent)
 
     return { success: true }
   } catch (error) {
@@ -452,7 +453,7 @@ export async function updateFunctionSecrets(projectId: string, secrets: Record<s
 
     // Write the secrets file the edge-runtime loads.
     const dockerDir = path.join(getProjectsBasePath(), project.slug, 'docker')
-    await fs.writeFile(path.join(dockerDir, FUNCTIONS_ENV_FILE), serializeEnvFile(secrets))
+    await writeSecretFile(path.join(dockerDir, FUNCTIONS_ENV_FILE), serializeEnvFile(secrets))
 
     // Backfill the env_file wiring for stacks generated before this feature.
     const composeFile = path.join(dockerDir, 'docker-compose.yml')

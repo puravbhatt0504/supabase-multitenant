@@ -1,5 +1,7 @@
 import fs from 'node:fs/promises'
 
+import { writeSecretFile } from './secret-file'
+
 /**
  * Edit individual variables in a `.env` file, leaving everything else alone.
  *
@@ -42,5 +44,5 @@ export async function mergeEnvFile(
   }
 
   const content = lines.join('\n').replace(/\n{3,}/g, '\n\n')
-  await fs.writeFile(envFilePath, content.endsWith('\n') ? content : `${content}\n`)
+  await writeSecretFile(envFilePath, content.endsWith('\n') ? content : `${content}\n`)
 }
