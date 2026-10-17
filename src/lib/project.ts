@@ -4,6 +4,8 @@ import { exec } from 'child_process'
 import { promisify } from 'util'
 import { prisma } from './db'
 import { writeSecretFile } from './secret-file'
+import { platformSmtpEnv, smtpMigration } from './platform-smtp'
+import { mergeEnvFile } from './env-file'
 import { removeProjectTraefikConfig } from './traefik'
 import { getCoreBasePath, getProjectsBasePath } from './paths'
 import { composeEnv } from './compose-env'
@@ -336,6 +338,9 @@ export async function createProject(
       // ports, the hosts it answers on, and the public URLs auth and Studio hand out.
       // These are the difference between a project that exists and one that works.
       ...tenantEnvVars(slug, slot, baseDomain),
+
+      // Real outgoing mail when the platform has an SMTP account; otherwise the fake mailer above.
+      ...(platformSmtpEnv() ?? {}),
     }
 
     // Write initial .env file with unique defaults
@@ -481,6 +486,26 @@ export async function deployProject(projectId: string) {
     }
 
     const projectDir = path.join(getProjectsBasePath(), project.slug, 'docker')
+
+    // A project still on the fake mailer picks up the platform's real SMTP on redeploy.
+    try {
+      const envPath = path.join(projectDir, '.env')
+      const current = /^SMTP_HOST=(.*)$/m.exec(await fs.readFile(envPath, 'utf8'))?.[1]?.trim()
+      const migration = smtpMigration(current, platformSmtpEnv())
+      if (migration) {
+        await mergeEnvFile(envPath, migration)
+        for (const [key, value] of Object.entries(migration)) {
+          await prisma.projectEnvVar.upsert({
+            where: { projectId_key: { projectId: project.id, key } },
+            update: { value },
+            create: { projectId: project.id, key, value },
+          })
+        }
+        console.log(`Project ${project.slug}: now sends mail through the platform SMTP`)
+      }
+    } catch (smtpError) {
+      console.warn(`Could not apply platform SMTP to ${project.slug}:`, smtpError)
+    }
 
     // Run pre-flight checks
     console.log('Running pre-flight checks...')

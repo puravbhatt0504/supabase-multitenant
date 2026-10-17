@@ -41,6 +41,14 @@ services:
       APP_URL: http://localhost:3000
       DATA_PATH: /data
       SUPABASE_CORE_REPO_URL: ${SUPABASE_CORE_REPO_URL:-https://github.com/supabase/supabase}
+      # Optional: one real SMTP account for every project's auth mail. All five of
+      # HOST/PORT/USER/PASS/FROM must be set or it is ignored (see src/lib/platform-smtp.ts).
+      PLATFORM_SMTP_HOST: ${PLATFORM_SMTP_HOST:-}
+      PLATFORM_SMTP_PORT: ${PLATFORM_SMTP_PORT:-}
+      PLATFORM_SMTP_USER: ${PLATFORM_SMTP_USER:-}
+      PLATFORM_SMTP_PASS: ${PLATFORM_SMTP_PASS:-}
+      PLATFORM_SMTP_FROM: ${PLATFORM_SMTP_FROM:-}
+      PLATFORM_SMTP_SENDER_NAME: ${PLATFORM_SMTP_SENDER_NAME:-}
     volumes:
       - /data:/data
       - /var/run/docker.sock:/var/run/docker.sock
