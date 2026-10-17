@@ -24,5 +24,14 @@ export async function register(): Promise<void> {
         `[instrumentation] idle reaper did not start: ${error instanceof Error ? error.message : error}`
       )
     }
+
+    try {
+      const { startBackupSchedulerOnce } = await import('./lib/backup-scheduler-runtime')
+      startBackupSchedulerOnce()
+    } catch (error) {
+      console.error(
+        `[instrumentation] backup scheduler did not start: ${error instanceof Error ? error.message : error}`
+      )
+    }
   }
 }
