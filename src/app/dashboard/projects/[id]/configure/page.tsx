@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { AiAssistantSettings } from '@/components/ai-assistant-settings'
+import { AuthProvidersSettings } from '@/components/auth-providers-settings'
 
 interface ConfigureProjectPageProps {
   params: Promise<{
@@ -977,6 +978,7 @@ export default function ConfigureProjectPage({ params }: ConfigureProjectPagePro
 
             {/* AI Assistant Section */}
             {projectId && <AiAssistantSettings projectId={projectId} />}
+            {projectId && <AuthProvidersSettings projectId={projectId} />}
 
             {/* Advanced Settings Section */}
             <Card>
