@@ -556,8 +556,11 @@ export async function restoreDatabaseBackup(
       if (wipe.code !== 0) throw new Error(`Could not clear the end users of ${target.slug}: ${wipe.stderr.slice(-300)}`)
     }
 
+    // supabase_admin, not postgres: tables made through the SQL editor are owned by it, and
+    // --clean cannot ALTER a table its role does not own. The dump carries no owners (--no-owner),
+    // and default privileges in public re-grant anon/authenticated/service_role on what it creates.
     const restore = await run('docker', [
-      'exec', container, 'pg_restore', '-U', 'postgres', '-d', database,
+      'exec', container, 'pg_restore', '-U', 'supabase_admin', '-d', database,
       '--no-owner', '--no-acl', '--clean', '--if-exists', '--single-transaction',
       '-L', listInContainer, inContainer,
     ])
