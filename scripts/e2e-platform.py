@@ -295,6 +295,19 @@ def main() -> int:
             record('the backup is listed for the project',
                    status == 200 and len(listing.get('backups', [])) >= 1, f'HTTP {status}')
 
+        # 7c. logs (#151): the panel must show what the project's own services said.
+        status, svc = call(args.panel, 'GET', f'/api/platform/projects/{project_id}/logs', token)
+        names = svc.get('services', []) if isinstance(svc, dict) else []
+        record('lists the project services for the log viewer', status == 200 and 'db' in names and 'rest' in names,
+               f'HTTP {status} {names}')
+        status, lg = call(args.panel, 'GET', f'/api/platform/projects/{project_id}/logs?service=db&tail=100', token)
+        db_lines = lg.get('lines', []) if isinstance(lg, dict) else []
+        record('returns recent database log lines', status == 200 and len(db_lines) > 0, f'{len(db_lines)} lines')
+        status, bad = call(args.panel, 'GET', f'/api/platform/projects/{project_id}/logs?service=nope', token)
+        record('refuses a service the project does not have', status == 404, f'HTTP {status}')
+        status, bad = call(args.panel, 'GET', f'/api/platform/projects/{project_id}/logs?service=db;ls', token)
+        record('refuses a malformed service name', status == 404, f'HTTP {status}')
+
         # 8b. restore: the people who signed up must survive losing them. Without this a restore
         # brings the tables back and every end user is gone. Delete the user, restore over the
         # project, and require that same user to sign in again with the same password.

@@ -1,5 +1,6 @@
 'use client'
 
+import { ProjectLogs } from '@/components/project-logs'
 import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -490,6 +491,8 @@ export function ProjectClient({
           )}
         </section>
       </div>
+
+      {can('project:deploy') && <ProjectLogs projectId={project.id} />}
 
       {project.description && (
         <section className="mt-6 rounded-xl border border-border bg-card px-5 py-4">
