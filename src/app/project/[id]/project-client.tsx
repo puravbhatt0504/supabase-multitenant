@@ -3,24 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import {
-  AlertTriangle,
-  Check,
-  Copy,
-  Database,
-  ExternalLink,
-  Eye,
-  EyeOff,
-  Loader2,
-  Pause,
-  Play,
-  RotateCcw,
-  Save,
-  Settings,
-  Trash2,
-  ShieldCheck,
-  Users,
-} from 'lucide-react'
+import { AlertTriangle, Check, Copy, Database, ExternalLink, Eye, EyeOff, Loader2, Pause, Play, RotateCcw, Save, Settings, Trash2, ShieldCheck, Users, Download, Upload } from 'lucide-react'
 
 type Project = {
   id: string
@@ -192,6 +175,27 @@ export function ProjectClient({
       router.refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Backup failed.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function importDump(file: File) {
+    setBusy('import')
+    setError(null)
+    setNotice(null)
+    try {
+      const res = await fetch(`/api/projects/${project.id}/backups/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file,
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? 'Import failed.')
+      setNotice(`Imported ${file.name} as ${json.backup?.fileName}. Use Restore to load it.`)
+      router.refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Import failed.')
     } finally {
       setBusy(null)
     }
@@ -412,6 +416,26 @@ export function ProjectClient({
           <header className="flex items-center justify-between border-b border-border px-5 py-4">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Backups</h2>
             {can('backup:create') && (
+              <label
+                className="mr-2 ml-auto flex cursor-pointer items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
+                title="Upload a pg_dump -Fc file; restore it afterwards"
+              >
+                {busy === 'import' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                Import dump
+                <input
+                  type="file"
+                  accept=".dump,.backup"
+                  className="hidden"
+                  disabled={busy === 'import'}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    e.target.value = ''
+                    if (file) void importDump(file)
+                  }}
+                />
+              </label>
+            )}
+            {can('backup:create') && (
               <button
                 onClick={() => void backupNow()}
                 disabled={busy === 'backup'}
@@ -439,6 +463,16 @@ export function ProjectClient({
                       {b.restoreCount > 0 ? ` · restored ${b.restoreCount}×` : ''}
                     </div>
                   </div>
+                  {can('backup:restore') && (
+                    <a
+                      href={`/api/projects/${project.id}/backups/${b.id}/download`}
+                      className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent"
+                      title="Download this backup"
+                    >
+                      <Download className="h-3 w-3" />
+                      Download
+                    </a>
+                  )}
                   {can('backup:restore') && (
                     <button
                       onClick={() => void restore(b.id, b.fileName)}
