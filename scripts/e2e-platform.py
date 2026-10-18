@@ -319,6 +319,41 @@ def main() -> int:
             count_after = count_rows('after restore')
             record('the project table is back after the restore', count_after == 2, f'rows={count_after}')
 
+        # 8c. export / import (#127): the artifact must leave the platform intact and come back.
+        if ok and backup_name and backup_id:
+            base = f"{args.panel}/api/platform/projects/{project_id}/backups"
+            local = f"/tmp/e2e-{stamp}.dump"
+            sh(f"curl -s -o {local} -D {local}.hdr -H 'Authorization: Bearer {token}' {base}/{backup_id}/download")
+            downloaded = sh(f"sha256sum {local} | cut -d' ' -f1").strip()
+            header_sha = sh(f"grep -i '^x-content-sha256' {local}.hdr | tr -d '\\r' | cut -d' ' -f2").strip()
+            on_disk = sh(f"sha256sum /data/backups/{project_slug}/{backup_name} | cut -d' ' -f1").strip()
+            record('the backup downloads as a file with the same checksum',
+                   bool(downloaded) and downloaded == on_disk == header_sha, f'{downloaded[:12]} / {header_sha[:12]}')
+            sh(f"cp {local} {local}.bad && printf 'X' | dd of={local}.bad bs=1 seek=40 conv=notrunc 2>/dev/null")
+            bad = sh(f"curl -s -o /dev/null -w '%{{http_code}}' -X POST --data-binary @{local}.bad "
+                     f"-H 'Authorization: Bearer {token}' '{base}/import?sha256={downloaded}'")
+            record('a corrupted upload is rejected on checksum mismatch', bad.strip() == '422', f'HTTP {bad}')
+            plain = sh(f"printf 'select 1;' | curl -s -o /dev/null -w '%{{http_code}}' -X POST --data-binary @- "
+                       f"-H 'Authorization: Bearer {token}' '{base}/import'")
+            record('a plain SQL file is rejected as not a dump', plain.strip() == '400', f'HTTP {plain}')
+            time.sleep(1.2)  # backup file names carry a one-second stamp
+            imp = sh(f"curl -s -X POST --data-binary @{local} -H 'Authorization: Bearer {token}' "
+                     f"'{base}/import?sha256={downloaded}'")
+            try:
+                imported = json.loads(imp).get('backup', {})
+            except Exception:  # noqa: BLE001
+                imported = {}
+            record('the downloaded file imports back as a new backup',
+                   imported.get('sha256') == downloaded and bool(imported.get('id')), imp[:160])
+            if imported.get('id'):
+                status, _r = call(args.panel, 'POST', f'/api/platform/projects/{project_id}/backups/{imported["id"]}/restore',
+                                  token, {'overwrite': True}, timeout=300)
+                again = public_call('POST', f'{api_url}/auth/v1/token?grant_type=password',
+                                    {'email': email, 'password': password}, headers={'apikey': anon})[0]
+                record('the imported backup restores and the end user still signs in',
+                       status == 200 and again == 200, f'restore HTTP {status}, sign-in HTTP {again}')
+            sh(f"rm -f {local} {local}.bad {local}.hdr")
+
         # 9. teardown: the project, then the organization
         if args.keep:
             print(f'\n  --keep: leaving {project_slug} and {context.get("organization")} in place')

@@ -5,6 +5,7 @@ import { exec, spawn } from 'child_process'
 import { promisify } from 'util'
 import { prisma } from './db'
 import { getBackupsBasePath } from './paths'
+import { receiveDump, parseSha256 } from './backup-upload'
 import { filterRestoreList, listingHasEndUsers } from './backup-restore-list'
 
 /**
@@ -501,6 +502,46 @@ export async function createStorageBackup(project: {
   })
 
   return { id: row.id, fileName, sizeBytes: stat.size, sha256 }
+}
+
+// ---------------------------------------------------------------------------
+// Import (a dump made elsewhere, registered like any other backup)
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_IMPORT_MAX_BYTES = 4 * 1024 * 1024 * 1024
+
+/**
+ * Register an uploaded `pg_dump -Fc` file as a backup of `project`, so the normal restore path
+ * applies unchanged. The file is verified (format, optional sha256) before a row exists.
+ */
+export async function importDatabaseBackup(
+  project: { id: string; slug: string },
+  body: ReadableStream<Uint8Array> | null,
+  options: { sha256?: string | null; maxBytes?: number } = {}
+): Promise<{ id: string; fileName: string; sizeBytes: number; sha256: string }> {
+  const expected = parseSha256(options.sha256)
+  const dir = backupDirectory(project.slug)
+  await fs.mkdir(dir, { recursive: true })
+  const fileName = backupFileName(project.slug, 'database', new Date())
+  const filePath = path.join(dir, fileName)
+
+  const { sizeBytes, sha256 } = await receiveDump(body, filePath, {
+    maxBytes: options.maxBytes ?? DEFAULT_IMPORT_MAX_BYTES,
+    expectedSha256: expected,
+  })
+  const row = await prisma.projectBackup.create({
+    data: {
+      projectId: project.id,
+      kind: 'database',
+      status: 'completed',
+      fileName,
+      filePath,
+      sizeBytes: BigInt(sizeBytes),
+      sha256,
+      completedAt: new Date(),
+    },
+  })
+  return { id: row.id, fileName, sizeBytes, sha256 }
 }
 
 // ---------------------------------------------------------------------------
