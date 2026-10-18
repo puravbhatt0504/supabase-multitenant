@@ -8,6 +8,7 @@ describe('runtimeStates', () => {
     'a-1-auth|Up 2 hours (healthy)',
     'b-2-db|Up 3 days (healthy)',
     'b-2-rest|Up 3 days (unhealthy)',
+    'a-1-studio|Exited (143) 3 weeks ago',
     'c-3-db|Exited (0) 2 days ago',
     'a-1-extra-db|Up 1 hour (healthy)',
     'coolify-db|Up 9 days (healthy)',
@@ -16,6 +17,9 @@ describe('runtimeStates', () => {
 
   it('is running when db and rest are up and nothing is unhealthy', () => {
     expect(out['a-1']).toEqual({ state: 'running', problems: [] })
+  })
+  it('does not call a deliberately stopped optional service a problem', () => {
+    expect(out['a-1'].state).toBe('running')
   })
   it('is degraded, naming the culprit, when something is unhealthy', () => {
     expect(out['b-2'].state).toBe('degraded')

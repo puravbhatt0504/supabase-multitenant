@@ -10,12 +10,16 @@ export type RuntimeState = 'running' | 'degraded' | 'down'
 
 export interface RuntimeSummary {
   state: RuntimeState
-  /** Container names that are up but not healthy (or not up at all, when others are). */
+  /** Core containers that are down, and any container that is up but unhealthy. */
   problems: string[]
 }
 
 const isUp = (status: string) => /^Up\b/i.test(status)
-const isBad = (status: string) => !isUp(status) || /unhealthy|starting/i.test(status)
+const CORE = ['db', 'rest', 'auth']
+
+/** A stopped optional service (studio, meta, functions) is a choice; a core one, or a sick one, is not. */
+const isProblem = (slug: string, name: string, status: string) =>
+  isUp(status) ? /unhealthy|starting/i.test(status) : CORE.some((c) => name === `${slug}-${c}`)
 
 /**
  * `lines` are `docker ps -a --format '{{.Names}}|{{.Status}}'`. A container belongs to the project
@@ -38,7 +42,7 @@ export function runtimeStates(slugs: string[], lines: string[]): Record<string, 
     const containers = owned[slug]
     const db = containers.find((c) => c.name === `${slug}-db`)
     const rest = containers.find((c) => c.name === `${slug}-rest`)
-    const problems = containers.filter((c) => isBad(c.status)).map((c) => c.name)
+    const problems = containers.filter((c) => isProblem(slug, c.name, c.status)).map((c) => c.name)
     if (!db || !isUp(db.status)) {
       result[slug] = { state: 'down', problems }
     } else if (!rest || problems.length > 0) {
