@@ -29,13 +29,20 @@ export function keepRestoreEntry(line: string): boolean {
 }
 
 export function filterRestoreList(listing: string): string {
-  return (
-    listing
-      .split('\n')
-      .filter(keepRestoreEntry)
-      .join('\n')
-      .replace(/\n*$/, '') + '\n'
-  )
+  const kept = listing.split('\n').filter(keepRestoreEntry)
+  // The auth foreign keys are not replayed, so pg_restore has no dependency to order the two data
+  // entries by, and identities (which reference users) can land first and fail. Users go first.
+  const isData = (table: string) => (l: string) => {
+    const m = ENTRY.exec(l)
+    return !!m && m[1] === 'TABLE DATA' && m[2] === 'auth' && m[3].split(' ')[0] === table
+  }
+  const users = kept.findIndex(isData('users'))
+  const identities = kept.findIndex(isData('identities'))
+  if (users > identities && identities >= 0) {
+    const [line] = kept.splice(users, 1)
+    kept.splice(identities, 0, line)
+  }
+  return kept.join('\n').replace(/\n*$/, '') + '\n'
 }
 
 /** Does this listing carry the end users? Used to tell the person what a restore will bring back. */

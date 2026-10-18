@@ -44,6 +44,16 @@ describe('filterRestoreList', () => {
     expect(out.some((l) => /FK CONSTRAINT auth/.test(l))).toBe(false)
   })
 
+  it('loads users before identities, which reference them', () => {
+    const swapped = filterRestoreList(
+      '1; 0 1 TABLE DATA auth identities o\n2; 0 2 TABLE DATA auth users o\n3; 0 3 TABLE DATA public t o\n'
+    ).split('\n')
+    expect(swapped.findIndex((l) => l.includes('auth users'))).toBeLessThan(
+      swapped.findIndex((l) => l.includes('auth identities'))
+    )
+    expect(swapped.some((l) => l.includes('public t'))).toBe(true)
+  })
+
   it('leaves a dump with no auth entries untouched', () => {
     const old = '1; 2615 2200 SCHEMA - public x\n2; 1259 1 TABLE public t x\n'
     expect(filterRestoreList(old)).toBe(old)
