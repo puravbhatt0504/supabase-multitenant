@@ -1,10 +1,11 @@
-import { promises as fs, createWriteStream, createReadStream } from 'fs'
+import { promises as fs, createWriteStream } from 'fs'
 import * as path from 'path'
 import { createHash } from 'crypto'
 import { exec, spawn } from 'child_process'
 import { promisify } from 'util'
 import { prisma } from './db'
 import { getBackupsBasePath } from './paths'
+import { filterRestoreList, listingHasEndUsers } from './backup-restore-list'
 
 /**
  * Per-project backup and restore.
@@ -21,8 +22,12 @@ import { getBackupsBasePath } from './paths'
 export const BACKUP_KINDS = ['database', 'storage'] as const
 export type BackupKind = (typeof BACKUP_KINDS)[number]
 
-/** Schemas dumped by default: application data only. */
-export const DEFAULT_SCHEMAS = ['public']
+/**
+ * Schemas dumped by default: the application's own, plus `auth` so the people who signed up come
+ * back with the data. A restore replays only the `auth.users` / `auth.identities` rows of it
+ * (see backup-restore-list.ts); the rest of the schema is never touched.
+ */
+export const DEFAULT_SCHEMAS = ['public', 'auth']
 
 const execAsync = promisify(exec)
 
@@ -234,23 +239,6 @@ function pipeToFile(command: string, args: string[], filePath: string): Promise<
     child.on('close', (code) => {
       out.end(() => resolve({ code: code ?? 0, stderr }))
     })
-  })
-}
-
-/** Run a command feeding a file into its stdin (binary-safe). */
-function pipeFromFile(command: string, args: string[], filePath: string): Promise<RunResult> {
-  return new Promise((resolve, reject) => {
-    let stderr = ''
-    const child = spawn(command, args)
-    const input = createReadStream(filePath)
-
-    input.pipe(child.stdin)
-    input.on('error', reject)
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString()
-    })
-    child.on('error', reject)
-    child.on('close', (code) => resolve({ code: code ?? 0, stderr }))
   })
 }
 
@@ -542,25 +530,43 @@ export async function restoreDatabaseBackup(
   })
 
   const database = await tenantDatabaseName(target.slug)
-  const args = [
-    'exec',
-    '-i',
-    dbContainerName(target.slug),
-    'pg_restore',
-    '-U',
-    'postgres',
-    '-d',
-    database,
-    '--no-owner',
-    '--no-acl',
-    '--clean',
-    '--if-exists',
-    '--single-transaction',
-  ]
+  const container = dbContainerName(target.slug)
+  const inContainer = '/tmp/smbt-restore.dump'
+  const listInContainer = '/tmp/smbt-restore.list'
+  const hostList = `${backup.filePath}.restore.list`
 
-  const { code, stderr } = await pipeFromFile('docker', args, backup.filePath)
-  if (code !== 0) {
-    throw new Error(`pg_restore failed for ${target.slug}: ${stderr.slice(-600)}`)
+  const cp = await run('docker', ['cp', backup.filePath, `${container}:${inContainer}`])
+  if (cp.code !== 0) throw new Error(`Could not hand the backup to ${target.slug}: ${cp.stderr.slice(-300)}`)
+
+  try {
+    // Replay the project's own schema and the end users, never the auth schema's DDL.
+    const listing = await run('docker', ['exec', container, 'pg_restore', '-l', inContainer])
+    if (listing.code !== 0) throw new Error(`Not a readable backup: ${listing.stderr.slice(-300)}`)
+    await fs.writeFile(hostList, filterRestoreList(listing.stdout))
+    const cpList = await run('docker', ['cp', hostList, `${container}:${listInContainer}`])
+    if (cpList.code !== 0) throw new Error(`Could not hand the restore plan to ${target.slug}: ${cpList.stderr.slice(-300)}`)
+
+    if (listingHasEndUsers(listing.stdout)) {
+      // The backup's end users replace whoever is there now; loading them next to existing rows
+      // would collide on id. CASCADE also clears sessions/tokens, which belonged to those users.
+      const wipe = await run('docker', [
+        'exec', container, 'psql', '-U', 'postgres', '-d', database, '-v', 'ON_ERROR_STOP=1', '-c',
+        'TRUNCATE auth.users, auth.identities CASCADE',
+      ])
+      if (wipe.code !== 0) throw new Error(`Could not clear the end users of ${target.slug}: ${wipe.stderr.slice(-300)}`)
+    }
+
+    const restore = await run('docker', [
+      'exec', container, 'pg_restore', '-U', 'postgres', '-d', database,
+      '--no-owner', '--no-acl', '--clean', '--if-exists', '--single-transaction',
+      '-L', listInContainer, inContainer,
+    ])
+    if (restore.code !== 0) {
+      throw new Error(`pg_restore failed for ${target.slug}: ${restore.stderr.slice(-600)}`)
+    }
+  } finally {
+    await fs.rm(hostList, { force: true })
+    await run('docker', ['exec', container, 'rm', '-f', inContainer, listInContainer]).catch(() => undefined)
   }
 
   await prisma.projectBackup.update({

@@ -295,6 +295,30 @@ def main() -> int:
             record('the backup is listed for the project',
                    status == 200 and len(listing.get('backups', [])) >= 1, f'HTTP {status}')
 
+        # 8b. restore: the people who signed up must survive losing them. Without this a restore
+        # brings the tables back and every end user is gone. Delete the user, restore over the
+        # project, and require that same user to sign in again with the same password.
+        if ok and backup_name:
+            contents = sh(f"docker exec -i {project_slug}-db pg_restore -l < /data/backups/{project_slug}/{backup_name}")
+            record('the backup carries the end users', 'TABLE DATA auth users' in contents)
+            backup_id = body.get('backup', {}).get('id')
+            sh(f"docker exec {project_slug}-db psql -U supabase_admin -d supabase_multitenant "
+               f"-c \"delete from auth.users where email='{email}'\"")
+            status, _b = public_call('POST', f'{api_url}/auth/v1/token?grant_type=password',
+                                     {'email': email, 'password': password}, headers={'apikey': anon})
+            record('the deleted end user can no longer sign in', status == 400, f'HTTP {status}')
+            status, restored = call(args.panel, 'POST',
+                                    f'/api/platform/projects/{project_id}/backups/{backup_id}/restore',
+                                    token, {'overwrite': True}, timeout=300)
+            record('restores the backup over the project', status == 200, f'HTTP {status} {str(restored)[:200]}')
+            status, again = public_call('POST', f'{api_url}/auth/v1/token?grant_type=password',
+                                        {'email': email, 'password': password}, headers={'apikey': anon})
+            record('the restored end user signs in with the same password',
+                   status == 200 and bool(isinstance(again, dict) and again.get('access_token')),
+                   f'HTTP {status}')
+            count_after = count_rows('after restore')
+            record('the project table is back after the restore', count_after == 2, f'rows={count_after}')
+
         # 9. teardown: the project, then the organization
         if args.keep:
             print(f'\n  --keep: leaving {project_slug} and {context.get("organization")} in place')
