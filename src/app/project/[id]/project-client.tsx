@@ -1,6 +1,7 @@
 'use client'
 
 import { ProjectLogs } from '@/components/project-logs'
+import { ProjectUsage } from '@/components/project-usage'
 import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -491,6 +492,8 @@ export function ProjectClient({
           )}
         </section>
       </div>
+
+      {can('analytics:read') && <ProjectUsage projectId={project.id} />}
 
       {can('project:deploy') && <ProjectLogs projectId={project.id} />}
 

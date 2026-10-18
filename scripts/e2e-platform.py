@@ -308,6 +308,15 @@ def main() -> int:
         status, bad = call(args.panel, 'GET', f'/api/platform/projects/{project_id}/logs?service=db;ls', token)
         record('refuses a malformed service name', status == 404, f'HTTP {status}')
 
+        # 7d. usage (#154): measured figures, and they must reflect what the test wrote.
+        status, u = call(args.panel, 'GET', f'/api/platform/projects/{project_id}/usage', token)
+        usage = u.get('usage', {}) if isinstance(u, dict) else {}
+        record('reports the database size and end users',
+               status == 200 and (usage.get('databaseBytes') or 0) > 1_000_000 and usage.get('endUsers') == 1,
+               f"HTTP {status} db={usage.get('databaseBytes')} users={usage.get('endUsers')}")
+        record('reports what the containers use', len(usage.get('containers', [])) >= 5 and usage.get('memoryBytes', 0) > 50_000_000,
+               f"{len(usage.get('containers', []))} containers, {usage.get('memoryBytes')} bytes")
+
         # 8b. restore: the people who signed up must survive losing them. Without this a restore
         # brings the tables back and every end user is gone. Delete the user, restore over the
         # project, and require that same user to sign in again with the same password.
