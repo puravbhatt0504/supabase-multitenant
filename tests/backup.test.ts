@@ -68,12 +68,13 @@ describe('naming', () => {
 })
 
 describe('schema defaults', () => {
-  it('dumps only the application schema by default', () => {
-    expect(DEFAULT_SCHEMAS).toEqual(['public'])
+  it('dumps the application schema and auth (the end users)', () => {
+    expect(DEFAULT_SCHEMAS).toEqual(['public', 'auth'])
   })
 
-  it('does not dump platform-managed schemas into a fresh project by default', () => {
-    for (const schema of ['auth', 'storage', 'realtime']) {
+  it('never dumps the other platform-managed schemas by default', () => {
+    // auth is dumped, but a restore replays only its users/identities rows (backup-restore-list).
+    for (const schema of ['storage', 'realtime']) {
       expect(DEFAULT_SCHEMAS).not.toContain(schema)
       expect(PLATFORM_SCHEMAS).toContain(schema)
     }
