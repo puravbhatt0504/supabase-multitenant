@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { apiTokenErrorResponse, requirePlatformAccess } from '@/lib/api-tokens'
 import { prisma } from '@/lib/db'
 import { createProject } from '@/lib/project'
+import { liveRuntimeStates } from '@/lib/runtime-state-live'
 
 /** Every project on the platform, and creation of one — for a token, not a browser. */
 export async function GET(request: NextRequest) {
@@ -15,7 +16,10 @@ export async function GET(request: NextRequest) {
         createdAt: true, organization: { select: { name: true, slug: true } },
       },
     })
-    return NextResponse.json({ projects })
+    const runtime = await liveRuntimeStates(projects.map((p) => p.slug))
+    return NextResponse.json({
+      projects: projects.map((p) => ({ ...p, runtime: runtime ? runtime[p.slug] : null })),
+    })
   } catch (error) {
     return apiTokenErrorResponse(error)
   }

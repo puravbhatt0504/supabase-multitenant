@@ -14,6 +14,7 @@ interface Project {
   description?: string
   status: string
   createdAt: string
+  runtime?: { state: 'running' | 'degraded' | 'down'; problems: string[] } | null
 }
 
 export default function DashboardPage() {
@@ -298,6 +299,14 @@ export default function DashboardPage() {
                           }`}>
                           {project.status}
                         </div>
+                        {project.status === 'active' && project.runtime && project.runtime.state !== 'running' && (
+                          <div
+                            title={project.runtime.problems.join(', ') || 'No containers are running for this project'}
+                            className={`px-2.5 py-1 rounded-full text-xs font-medium ml-2 ${project.runtime.state === 'down' ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'}`}
+                          >
+                            {project.runtime.state === 'down' ? 'not running' : 'degraded'}
+                          </div>
+                        )}
                       </div>
                       {project.description && (
                         <CardDescription className="text-slate-400">{project.description}</CardDescription>

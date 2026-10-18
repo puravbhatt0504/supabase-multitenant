@@ -7,6 +7,7 @@ import {
   requireOrgPermission,
 } from '@/lib/access'
 import { getSession, unauthorized } from '@/lib/api-auth'
+import { liveRuntimeStates } from '@/lib/runtime-state-live'
 
 /**
  * Projects.
@@ -51,7 +52,10 @@ export async function GET(request: NextRequest) {
       orderBy: { createdAt: 'desc' },
     })
 
-    return NextResponse.json({ projects })
+    const runtime = await liveRuntimeStates(projects.map((p) => p.slug))
+    return NextResponse.json({
+      projects: projects.map((p) => ({ ...p, runtime: runtime ? runtime[p.slug] : null })),
+    })
   } catch (error) {
     console.error('List projects error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
